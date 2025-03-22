@@ -1,10 +1,18 @@
 import type {
     IAgentRuntime,
+<<<<<<< HEAD
     Actor,
     Content,
     Memory,
     UUID,
 } from "./types.ts";
+=======
+    type Actor,
+    type Content,
+    type Memory,
+    type UUID,
+} from "./types";
+>>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
 
 /**
  * Get details for a list of actors.

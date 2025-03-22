@@ -1,9 +1,16 @@
 import type {
     IAgentRuntime,
+<<<<<<< HEAD
     Goal,
     Objective,
     UUID,
 } from "./types.ts";
+=======
+    type Goal,
+    type Objective,
+    type UUID,
+} from "./types";
+>>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
 
 export const getGoals = async ({
     runtime,

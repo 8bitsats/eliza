@@ -1,6 +1,10 @@
+<<<<<<< HEAD
 import handlebars from "handlebars";
 import type { State, TemplateType } from "./types.ts";
 import { names, uniqueNamesGenerator } from "unique-names-generator";
+=======
+import { type State } from "./types";
+>>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
 
 /**
  * Composes a context string by replacing placeholders in a template with corresponding values from the state.

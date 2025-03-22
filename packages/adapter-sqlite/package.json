@@ -19,11 +19,19 @@
         "dist"
     ],
     "dependencies": {
+<<<<<<< HEAD
         "@elizaos/core": "workspace:*",
         "@types/better-sqlite3": "7.6.12",
         "better-sqlite3": "11.8.1",
         "sqlite-vec": "0.1.6",
         "uuid": "11.0.5"
+=======
+        "@ai16z/eliza": "workspace:*",
+        "@types/better-sqlite3": "7.6.11",
+        "sqlite-vec": "0.1.4-alpha.2",
+        "better-sqlite3": "11.5.0",
+        "uuid": "^9.0.1"
+>>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
     },
     "devDependencies": {
         "@types/uuid": "10.0.0",

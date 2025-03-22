@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import { embed, getEmbeddingZeroVector } from "./embedding.ts";
 import elizaLogger from "./logger.ts";
 import type {
@@ -6,6 +7,15 @@ import type {
     Memory,
     UUID,
 } from "./types.ts";
+=======
+import { embed } from "./embedding";
+import {
+    IAgentRuntime,
+    IMemoryManager,
+    type Memory,
+    type UUID,
+} from "./types";
+>>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
 
 const defaultMatchThreshold = 0.1;
 const defaultMatchCount = 10;
