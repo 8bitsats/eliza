@@ -14,9 +14,9 @@ import {
     SidebarMenuSkeleton,
 } from "@/components/ui/sidebar";
 import { apiClient } from "@/lib/api";
-import { NavLink, useLocation } from "react-router";
+import { NavLink, useLocation } from "react-router-dom";
 import type { UUID } from "@elizaos/core";
-import { Book, Cog, User } from "lucide-react";
+import { Book, Cog, User, Bitcoin } from "lucide-react";
 import ConnectionStatus from "./connection-status";
 
 export function AppSidebar() {
@@ -107,6 +107,13 @@ export function AppSidebar() {
                         >
                             <SidebarMenuButton>
                                 <Book /> Documentation
+                            </SidebarMenuButton>
+                        </NavLink>
+                    </SidebarMenuItem>
+                    <SidebarMenuItem>
+                        <NavLink to="/ordinals">
+                            <SidebarMenuButton isActive={location.pathname === "/ordinals"}>
+                                <Bitcoin /> Ordinals
                             </SidebarMenuButton>
                         </NavLink>
                     </SidebarMenuItem>

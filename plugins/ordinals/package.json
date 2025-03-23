@@ -1,0 +1,38 @@
+{
+  "name": "@elizaos/plugin-ordinals",
+  "version": "1.0.0",
+  "description": "ElizaOS plugin for Bitcoin Ordinals and blockchain interactions",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "ORD_MOCK_MODE=true tsx test.ts",
+    "test:mock": "ORD_MOCK_MODE=true tsx test.ts",
+    "test:testnet": "BITCOIN_NETWORK=testnet tsx test.ts",
+    "test:mainnet": "BITCOIN_NETWORK=mainnet tsx test.ts",
+    "test:hiro": "tsx test-hiro.ts",
+    "test:hunter": "tsx test-rare-satoshi-hunter.ts"
+  },
+  "keywords": [
+    "bitcoin",
+    "ordinals",
+    "blockchain",
+    "elizaos",
+    "plugin"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.2",
+    "zod": "^3.22.4"
+  },
+  "peerDependencies": {
+    "@elizaos/core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.19.3",
+    "typescript": "^5.3.2"
+  }
+}

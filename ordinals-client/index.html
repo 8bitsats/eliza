@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ordinals Client</title>
+    <script src="client.js" defer></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #121212;
+            color: #e0e0e0;
+        }
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+        .sidebar {
+            width: 250px;
+            background-color: #1e1e1e;
+            padding: 20px;
+            border-right: 1px solid #333;
+            display: flex;
+            flex-direction: column;
+        }
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        .chat-container {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        .input-container {
+            display: flex;
+            padding: 10px;
+            background-color: #1e1e1e;
+            border-top: 1px solid #333;
+        }
+        input {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            border-radius: 4px;
+            background-color: #333;
+            color: #e0e0e0;
+        }
+        button {
+            background-color: #ff9500;
+            color: #000;
+            border: none;
+            padding: 10px 15px;
+            margin-left: 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .action-button {
+            background-color: #333;
+            color: #e0e0e0;
+            border: 1px solid #555;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            text-align: left;
+        }
+        .action-button:hover {
+            background-color: #444;
+        }
+        .status {
+            padding: 10px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+            text-align: center;
+            font-weight: bold;
+        }
+        .status.disconnected {
+            background-color: #333;
+        }
+        .status.connected {
+            background-color: #2e7d32;
+        }
+        .status.error {
+            background-color: #c62828;
+        }
+        .message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 4px;
+            max-width: 80%;
+        }
+        .user-message {
+            background-color: #1e88e5;
+            align-self: flex-end;
+            margin-left: auto;
+        }
+        .agent-message {
+            background-color: #333;
+            align-self: flex-start;
+        }
+        .system-message {
+            background-color: #555;
+            color: #ccc;
+            font-style: italic;
+            max-width: 100%;
+            text-align: center;
+            margin: 10px auto;
+        }
+        h1 {
+            margin-top: 0;
+            color: #ff9500;
+        }
+        .logo {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #ff9500;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <div class="logo">Ordinals Client</div>
+            <div id="status" class="status disconnected">Disconnected</div>
+            
+            <button id="connect-btn" class="action-button">Connect to Eliza</button>
+            
+            <h3>Ordinals Actions</h3>
+            <button class="action-button" onclick="sendAction('GET_INSCRIPTIONS')">Get Recent Inscriptions</button>
+            <button class="action-button" onclick="sendAction('GET_INSCRIPTION_CONTENT', {id: prompt('Enter inscription ID:')})">
+                View Inscription Content
+            </button>
+            <button class="action-button" onclick="sendAction('FIND_RARE_SATOSHIS', {rarity: prompt('Enter rarity (common, uncommon, rare, epic, legendary, mythic):')})">
+                Find Rare Satoshis
+            </button>
+            <button class="action-button" onclick="sendAction('GET_WALLET_BALANCE')">Check Wallet Balance</button>
+            <button class="action-button" onclick="sendAction('LIST_WALLET_INSCRIPTIONS')">List Wallet Inscriptions</button>
+        </div>
+        
+        <div class="main">
+            <div id="chat" class="chat-container"></div>
+            
+            <div class="input-container">
+                <input id="message-input" type="text" placeholder="Type your message..." />
+                <button id="send-btn">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // DOM elements
+        const chatContainer = document.getElementById('chat');
+        const messageInput = document.getElementById('message-input');
+        const sendButton = document.getElementById('send-btn');
+        const statusElement = document.getElementById('status');
+        const connectButton = document.getElementById('connect-btn');
+        
+        // Set up callbacks for the OrdinalsClient
+        ordinalsClient.setCallbacks({
+            onMessage: (text) => {
+                addAgentMessage(text);
+            },
+            onStatusChange: (text, className) => {
+                updateStatus(text, className);
+            },
+            onSystemMessage: (text) => {
+                addSystemMessage(text);
+            }
+        });
+        
+        // Event listeners
+        sendButton.addEventListener('click', sendMessage);
+        messageInput.addEventListener('keypress', e => {
+            if (e.key === 'Enter') sendMessage();
+        });
+        connectButton.addEventListener('click', connectToEliza);
+        
+        // Functions
+        function updateStatus(text, className) {
+            statusElement.textContent = text;
+            statusElement.className = 'status ' + className;
+        }
+        
+        function addMessage(text, type) {
+            const messageElement = document.createElement('div');
+            messageElement.className = `message ${type}-message`;
+            messageElement.textContent = text;
+            chatContainer.appendChild(messageElement);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+        
+        function addUserMessage(text) {
+            addMessage(text, 'user');
+        }
+        
+        function addAgentMessage(text) {
+            addMessage(text, 'agent');
+        }
+        
+        function addSystemMessage(text) {
+            addMessage(text, 'system');
+        }
+        
+        function connectToEliza() {
+            updateStatus('Connecting...', 'disconnected');
+            addSystemMessage('Connecting to Eliza server...');
+            
+            ordinalsClient.connect()
+                .catch(error => {
+                    console.error('Connection error:', error);
+                });
+        }
+        
+        function sendMessage() {
+            const text = messageInput.value.trim();
+            if (!text || !ordinalsClient.isConnected) return;
+            
+            try {
+                addUserMessage(text);
+                ordinalsClient.sendMessage(text);
+                messageInput.value = '';
+            } catch (error) {
+                console.error('Error sending message:', error);
+                addSystemMessage(`Error sending message: ${error.message}`);
+            }
+        }
+        
+        function sendAction(action, params = {}) {
+            if (!ordinalsClient.isConnected) {
+                addSystemMessage('Not connected to Eliza server. Click Connect first.');
+                return;
+            }
+            
+            addSystemMessage(`Executing action: ${action}`);
+            
+            // Handle Ordinals API actions directly
+            if (action === 'GET_INSCRIPTIONS') {
+                handleGetInscriptions();
+                return;
+            } else if (action === 'GET_INSCRIPTION_CONTENT' && params.id) {
+                handleGetInscriptionContent(params.id);
+                return;
+            } else if (action === 'FIND_RARE_SATOSHIS' && params.rarity) {
+                handleFindRareSatoshis(params.rarity);
+                return;
+            }
+            
+            // For other actions, send through Eliza
+            try {
+                ordinalsClient.sendAction(action, params);
+            } catch (error) {
+                console.error('Error sending action:', error);
+                addSystemMessage(`Error sending action: ${error.message}`);
+            }
+        }
+        
+        // Handle getting inscriptions from the Ordinals API
+        async function handleGetInscriptions() {
+            try {
+                addSystemMessage('Fetching recent inscriptions...');
+                
+                const result = await ordinalsClient.getInscriptions({
+                    limit: 10,
+                    order_by: 'genesis_timestamp',
+                    order: 'desc'
+                });
+                
+                if (result && result.results) {
+                    let message = 'Recent Inscriptions:\n\n';
+                    
+                    result.results.forEach(inscription => {
+                        message += `#${inscription.number}: "${inscription.content_type}" (${formatBytes(inscription.content_length)})\n`;
+                        message += `Created: ${new Date(inscription.genesis_timestamp).toLocaleString()}\n`;
+                        message += `ID: ${inscription.id}\n\n`;
+                    });
+                    
+                    addAgentMessage(message);
+                } else {
+                    addSystemMessage('No inscriptions found or error in API response');
+                }
+            } catch (error) {
+                console.error('Error fetching inscriptions:', error);
+                addSystemMessage(`Error fetching inscriptions: ${error.message}`);
+            }
+        }
+        
+        // Handle viewing inscription content
+        async function handleGetInscriptionContent(id) {
+            try {
+                addSystemMessage(`Fetching content for inscription ${id}...`);
+                
+                // First get the inscription details
+                const inscriptionData = await ordinalsClient.getInscription(id);
+                
+                if (!inscriptionData) {
+                    addSystemMessage(`Inscription ${id} not found`);
+                    return;
+                }
+                
+                // Then get the content
+                const contentBlob = await ordinalsClient.getInscriptionContent(id);
+                
+                // Create a message with the inscription details
+                let message = `Inscription #${inscriptionData.number}\n`;
+                message += `MIME Type: ${inscriptionData.mime_type}\n`;
+                message += `Size: ${formatBytes(inscriptionData.content_length)}\n`;
+                message += `Created: ${new Date(inscriptionData.genesis_timestamp).toLocaleString()}\n\n`;
+                
+                addAgentMessage(message);
+                
+                // For images, display them
+                if (inscriptionData.mime_type.startsWith('image/')) {
+                    const imgUrl = URL.createObjectURL(contentBlob);
+                    const imgElement = document.createElement('img');
+                    imgElement.src = imgUrl;
+                    imgElement.style.maxWidth = '100%';
+                    imgElement.style.borderRadius = '4px';
+                    imgElement.style.marginBottom = '15px';
+                    
+                    chatContainer.appendChild(imgElement);
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                }
+                // For text content, display it
+                else if (inscriptionData.mime_type.startsWith('text/')) {
+                    const text = await contentBlob.text();
+                    const contentElement = document.createElement('div');
+                    contentElement.className = 'message agent-message';
+                    contentElement.style.whiteSpace = 'pre-wrap';
+                    contentElement.style.fontFamily = 'monospace';
+                    contentElement.textContent = text.substring(0, 1000) + (text.length > 1000 ? '...' : '');
+                    
+                    chatContainer.appendChild(contentElement);
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                }
+                // For other types, just show a link
+                else {
+                    addSystemMessage(`Content type ${inscriptionData.mime_type} cannot be displayed directly.`);
+                }
+            } catch (error) {
+                console.error(`Error fetching inscription content for ${id}:`, error);
+                addSystemMessage(`Error fetching inscription content: ${error.message}`);
+            }
+        }
+        
+        // Handle finding rare satoshis
+        async function handleFindRareSatoshis(rarity) {
+            try {
+                addSystemMessage(`Searching for ${rarity} satoshis...`);
+                
+                const result = await ordinalsClient.findRareSatoshis(rarity, 5);
+                
+                if (result && result.results && result.results.length > 0) {
+                    let message = `Found ${result.results.length} ${rarity} satoshis:\n\n`;
+                    
+                    result.results.forEach(inscription => {
+                        message += `Satoshi: ${inscription.sat_ordinal}\n`;
+                        message += `Rarity: ${inscription.sat_rarity}\n`;
+                        message += `Inscription #${inscription.number}: ${inscription.content_type}\n`;
+                        message += `ID: ${inscription.id}\n\n`;
+                    });
+                    
+                    addAgentMessage(message);
+                } else {
+                    addSystemMessage(`No ${rarity} satoshis found`);
+                }
+            } catch (error) {
+                console.error(`Error finding ${rarity} satoshis:`, error);
+                addSystemMessage(`Error finding rare satoshis: ${error.message}`);
+            }
+        }
+        
+        // Helper function to format bytes
+        function formatBytes(bytes, decimals = 2) {
+            if (bytes === 0) return '0 Bytes';
+            
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        }
+        
+        // Add initial system message
+        addSystemMessage('Welcome to the Ordinals Client. Click Connect to start chatting with Ord GPT.');
+    </script>
+</body>
+</html>
