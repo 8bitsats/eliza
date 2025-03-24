@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
-import { useForm, SubmitHandler, ControllerRenderProps } from "react-hook-form";
+import { useForm, SubmitHandler } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { AlertCircle, Loader2 } from "lucide-react";
@@ -28,13 +28,15 @@ const formSchema = z.object({
 
 type FormValues = z.infer<typeof formSchema>;
 
-interface FormFieldProps {
-  field: ControllerRenderProps<FormValues, keyof FormValues>;
-}
-
 interface DNAArtGeneratorProps {
   onArtGenerated?: (dna: string, imageUrl: string) => void;
   initialDNA?: string;
+}
+
+interface DNAGenerationOptions {
+  style: string;
+  model: string;
+  prompt: string;
 }
 
 export function DNAArtGenerator({ onArtGenerated, initialDNA }: DNAArtGeneratorProps): ReactElement {
@@ -62,14 +64,14 @@ export function DNAArtGenerator({ onArtGenerated, initialDNA }: DNAArtGeneratorP
       setError(null);
 
       const response = await dnaService.generateDNA({
-        prompt: data.prompt,
         style: data.style,
         model: data.model,
+        prompt: data.prompt,
       });
 
       // Create a seed from the hash for consistent art generation
       const seed = Array.from(response.hash)
-        .map((char) => char.charCodeAt(0))
+        .map((c: string) => c.charCodeAt(0))
         .reduce((acc, val) => acc + val, 0);
 
       form.setValue('seed', seed);
@@ -105,10 +107,10 @@ export function DNAArtGenerator({ onArtGenerated, initialDNA }: DNAArtGeneratorP
             <FormField
               control={form.control}
               name="style"
-              render={({ field }: FormFieldProps) => (
+              render={({ field }) => (
                 <FormItem>
                   <FormLabel>Art Style</FormLabel>
-                  <Select onValueChange={field.onChange} defaultValue={field.value}>
+                  <Select onValueChange={field.onChange} value={field.value}>
                     <SelectTrigger>
                       <SelectValue placeholder="Select style" />
                     </SelectTrigger>
@@ -129,10 +131,10 @@ export function DNAArtGenerator({ onArtGenerated, initialDNA }: DNAArtGeneratorP
             <FormField
               control={form.control}
               name="model"
-              render={({ field }: FormFieldProps) => (
+              render={({ field }) => (
                 <FormItem>
                   <FormLabel>AI Model</FormLabel>
-                  <Select onValueChange={field.onChange} defaultValue={field.value}>
+                  <Select onValueChange={field.onChange} value={field.value}>
                     <SelectTrigger>
                       <SelectValue placeholder="Select model" />
                     </SelectTrigger>
@@ -152,7 +154,7 @@ export function DNAArtGenerator({ onArtGenerated, initialDNA }: DNAArtGeneratorP
             <FormField
               control={form.control}
               name="prompt"
-              render={({ field }: FormFieldProps) => (
+              render={({ field }) => (
                 <FormItem>
                   <FormControl>
                     <Textarea
@@ -172,7 +174,7 @@ export function DNAArtGenerator({ onArtGenerated, initialDNA }: DNAArtGeneratorP
               <FormField
                 control={form.control}
                 name="width"
-                render={({ field }: FormFieldProps) => (
+                render={({ field }) => (
                   <FormItem>
                     <FormLabel>Width: {field.value}px</FormLabel>
                     <FormControl>
@@ -180,7 +182,7 @@ export function DNAArtGenerator({ onArtGenerated, initialDNA }: DNAArtGeneratorP
                         min={512}
                         max={1024}
                         step={64}
-                        value={[field.value]}
+                        value={[field.value ?? 512]}
                         onValueChange={(values) => field.onChange(values[0])}
                       />
                     </FormControl>
@@ -191,7 +193,7 @@ export function DNAArtGenerator({ onArtGenerated, initialDNA }: DNAArtGeneratorP
               <FormField
                 control={form.control}
                 name="height"
-                render={({ field }: FormFieldProps) => (
+                render={({ field }) => (
                   <FormItem>
                     <FormLabel>Height: {field.value}px</FormLabel>
                     <FormControl>
@@ -199,7 +201,7 @@ export function DNAArtGenerator({ onArtGenerated, initialDNA }: DNAArtGeneratorP
                         min={512}
                         max={1024}
                         step={64}
-                        value={[field.value]}
+                        value={[field.value ?? 512]}
                         onValueChange={(values) => field.onChange(values[0])}
                       />
                     </FormControl>
@@ -211,7 +213,7 @@ export function DNAArtGenerator({ onArtGenerated, initialDNA }: DNAArtGeneratorP
             <FormField
               control={form.control}
               name="steps"
-              render={({ field }: FormFieldProps) => (
+              render={({ field }) => (
                 <FormItem>
                   <FormLabel>Inference Steps: {field.value}</FormLabel>
                   <FormControl>
@@ -219,7 +221,7 @@ export function DNAArtGenerator({ onArtGenerated, initialDNA }: DNAArtGeneratorP
                       min={20}
                       max={150}
                       step={1}
-                      value={[field.value]}
+                      value={[field.value ?? 50]}
                       onValueChange={(values) => field.onChange(values[0])}
                     />
                   </FormControl>
@@ -233,7 +235,7 @@ export function DNAArtGenerator({ onArtGenerated, initialDNA }: DNAArtGeneratorP
             <FormField
               control={form.control}
               name="seed"
-              render={({ field }: FormFieldProps) => (
+              render={({ field }) => (
                 <FormItem>
                   <FormLabel>Seed</FormLabel>
                   <FormControl>
@@ -273,7 +275,20 @@ export function DNAArtGenerator({ onArtGenerated, initialDNA }: DNAArtGeneratorP
         </Form>
 
         <div ref={artDisplayRef} className="mt-8">
-          {sequence && <DNAVisualizer sequence={sequence} showControls={true} />}
+          {sequence && <DNAVisualizer 
+            sequence={sequence} 
+            showControls={true} 
+            visualizationStyle="matrix"
+            width={1024}
+            height={1024}
+            colorScheme={{
+              A: '#4CAF50',
+              T: '#2196F3',
+              G: '#FFC107',
+              C: '#F44336',
+              background: '#121212'
+            }} 
+          />}
         </div>
       </CardContent>
     </Card>

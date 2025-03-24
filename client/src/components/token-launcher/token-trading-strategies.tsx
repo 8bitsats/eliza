@@ -9,15 +9,17 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Loader2 } from "lucide-react";
 import { TradingStrategiesService } from "@/api/trading-strategies-service";
-import { PublicKey } from "@solana/web3.js";
+import { PublicKey, Transaction } from "@solana/web3.js";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+// Update the schema to include activeTab field
 const tradingStrategySchema = z.object({
   tokenAddress: z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, "Must be a valid Solana address"),
   marketAddress: z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, "Must be a valid Solana address"),
   stopLossPrice: z.string().regex(/^\d*\.?\d*$/, "Must be a valid number"),
   takeProfitPrice: z.string().regex(/^\d*\.?\d*$/, "Must be a valid number"),
   copyTraderAddress: z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, "Must be a valid Solana address"),
+  activeTab: z.string().default("stop-loss"),
 });
 
 type TradingStrategyFormValues = z.infer<typeof tradingStrategySchema>;
@@ -27,11 +29,22 @@ interface TokenTradingStrategiesProps {
   marketAddress?: string;
 }
 
+// Declare the window.solana type to avoid TypeScript errors
+declare global {
+  interface Window {
+    solana?: {
+      publicKey: PublicKey;
+      sendTransaction: (transaction: Transaction) => Promise<string>;
+    };
+  }
+}
+
 export function TokenTradingStrategies({ tokenAddress, marketAddress }: TokenTradingStrategiesProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [currentPrice, setCurrentPrice] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState("stop-loss");
 
   const tradingService = new TradingStrategiesService(process.env.VITE_SOLANA_RPC_URL || "");
 
@@ -43,6 +56,7 @@ export function TokenTradingStrategies({ tokenAddress, marketAddress }: TokenTra
       stopLossPrice: "",
       takeProfitPrice: "",
       copyTraderAddress: "",
+      activeTab: "stop-loss",
     },
   });
 
@@ -62,7 +76,7 @@ export function TokenTradingStrategies({ tokenAddress, marketAddress }: TokenTra
     const interval = setInterval(fetchPrice, 10000); // Update price every 10 seconds
 
     return () => clearInterval(interval);
-  }, [marketAddress]);
+  }, [marketAddress, tradingService]);
 
   const onSubmit = async (data: TradingStrategyFormValues) => {
     try {
@@ -79,7 +93,6 @@ export function TokenTradingStrategies({ tokenAddress, marketAddress }: TokenTra
       };
 
       // Create transaction instructions based on active tab
-      const activeTab = form.watch("activeTab");
       let instruction;
 
       switch (activeTab) {
@@ -97,6 +110,10 @@ export function TokenTradingStrategies({ tokenAddress, marketAddress }: TokenTra
       }
 
       // Send transaction
+      if (!window.solana) {
+        throw new Error("Solana wallet not connected");
+      }
+
       const transaction = new Transaction().add(instruction);
       const signature = await window.solana.sendTransaction(transaction);
 
@@ -106,6 +123,11 @@ export function TokenTradingStrategies({ tokenAddress, marketAddress }: TokenTra
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleTabChange = (value: string) => {
+    setActiveTab(value);
+    form.setValue("activeTab", value);
   };
 
   return (
@@ -124,7 +146,7 @@ export function TokenTradingStrategies({ tokenAddress, marketAddress }: TokenTra
           </div>
         )}
 
-        <Tabs defaultValue="stop-loss">
+        <Tabs value={activeTab} onValueChange={handleTabChange}>
           <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="stop-loss">Stop Loss</TabsTrigger>
             <TabsTrigger value="take-profit">Take Profit</TabsTrigger>

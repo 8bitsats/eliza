@@ -12,11 +12,12 @@ export enum Nucleotide {
   C = "C",
 }
 
-const nucleotideColors: Record<Nucleotide, string> = {
-  [Nucleotide.A]: "#4CAF50", // Green
-  [Nucleotide.T]: "#2196F3", // Blue
-  [Nucleotide.G]: "#FFC107", // Yellow
-  [Nucleotide.C]: "#F44336", // Red
+const defaultColorScheme = {
+  A: "#4CAF50", // Green
+  T: "#2196F3", // Blue
+  G: "#FFC107", // Yellow
+  C: "#F44336", // Red
+  background: "#121212"
 };
 
 // Interface for the DNAVisualizer component props
@@ -24,14 +25,27 @@ export interface DNAVisualizerProps {
   sequence: string;
   dnaHash?: string | null;
   showControls?: boolean;
+  visualizationStyle?: 'helix' | 'matrix' | 'radial' | 'barcode';
+  width?: number;
+  height?: number;
+  colorScheme?: typeof defaultColorScheme;
 }
 
 /**
  * Component to visualize DNA sequences with color-coding
  */
-export function DNAVisualizer({ sequence, dnaHash, showControls = true }: DNAVisualizerProps) {
+export function DNAVisualizer({ 
+  sequence, 
+  dnaHash, 
+  showControls = true,
+  visualizationStyle = 'matrix',
+  width = 1024,
+  height = 1024,
+  colorScheme = defaultColorScheme
+}: DNAVisualizerProps) {
   const [copied, setCopied] = useState(false);
   const [displayMode, setDisplayMode] = useState<"colorized" | "text">("colorized");
+  const [visualizationBuffer, setVisualizationBuffer] = useState<Buffer | null>(null);
   
   // Reset copied state after 2 seconds
   useEffect(() => {
@@ -40,6 +54,29 @@ export function DNAVisualizer({ sequence, dnaHash, showControls = true }: DNAVis
       return () => clearTimeout(timer);
     }
   }, [copied]);
+
+  // Generate visualization when sequence changes
+  useEffect(() => {
+    const generateVisualization = async () => {
+      try {
+        const dnaVisualizer = new DNAVisualizer();
+        const buffer = await dnaVisualizer.createVisualization({
+          dnaSequence: sequence,
+          style: visualizationStyle,
+          width,
+          height,
+          colorScheme
+        });
+        setVisualizationBuffer(buffer);
+      } catch (error) {
+        console.error('Error generating DNA visualization:', error);
+      }
+    };
+
+    if (sequence) {
+      generateVisualization();
+    }
+  }, [sequence, visualizationStyle, width, height, colorScheme]);
   
   // Handle copy to clipboard
   const handleCopy = () => {
@@ -47,93 +84,76 @@ export function DNAVisualizer({ sequence, dnaHash, showControls = true }: DNAVis
     setCopied(true);
   };
   
-  // Get color for a nucleotide
-  const getNucleotideColor = (nucleotide: string): string => {
-    const upperNucleotide = nucleotide.toUpperCase() as Nucleotide;
-    return nucleotideColors[upperNucleotide] || "#757575";
-  };
-  
-  // Colorize nucleotides
-  const colorizeNucleotides = () => {
-    return sequence.split("").map((nucleotide, index) => (
-      <span 
-        key={index}
-        style={{ color: getNucleotideColor(nucleotide) }}
-        className="font-mono"
-      >
-        {nucleotide}
-      </span>
-    ));
-  };
-  
-  // Format sequence with breaks
-  const formatSequence = () => {
-    const formatted = [];
-    for (let i = 0; i < sequence.length; i += 80) {
-      // Position counter
-      formatted.push(
-        <div key={`line-${i}`} className="flex">
-          <div className="w-10 text-muted-foreground text-right pr-2 select-none font-mono text-xs">
-            {i + 1}
-          </div>
-          <div className="flex-1 font-mono text-xs overflow-hidden">
-            {displayMode === "colorized" 
-              ? colorizeNucleotides().slice(i, i + 80)
-              : sequence.slice(i, i + 80)
-            }
-          </div>
-        </div>
-      );
-    }
-    return formatted;
-  };
-
   return (
-    <Card className="relative">
+    <Card>
       <CardContent className="p-4">
         {showControls && (
-          <div className="flex justify-between items-center mb-2">
-            <div className="flex items-center gap-2">
-              <Label className="text-sm font-medium">Display Mode:</Label>
-              <Button 
-                variant={displayMode === "colorized" ? "default" : "outline"}
+          <div className="flex justify-between items-center mb-4">
+            <div className="flex items-center gap-4">
+              <Button
+                variant="outline"
                 size="sm"
-                onClick={() => setDisplayMode("colorized")}
-                className="h-7 px-2 text-xs"
+                onClick={() => setDisplayMode(displayMode === "colorized" ? "text" : "colorized")}
               >
-                Colorized
+                {displayMode === "colorized" ? "Show Text" : "Show Colors"}
               </Button>
-              <Button 
-                variant={displayMode === "text" ? "default" : "outline"}
+              <Button
+                variant="outline"
                 size="sm"
-                onClick={() => setDisplayMode("text")}
-                className="h-7 px-2 text-xs"
+                onClick={handleCopy}
+                className="flex items-center gap-2"
               >
-                Plain Text
+                {copied ? (
+                  <>
+                    <CopyCheck className="w-4 h-4" />
+                    Copied!
+                  </>
+                ) : (
+                  "Copy Sequence"
+                )}
               </Button>
             </div>
-            <Button 
-              variant="ghost" 
-              size="sm" 
-              onClick={handleCopy} 
-              className="h-7"
-            >
-              <CopyCheck size={16} className="mr-1" />
-              {copied ? "Copied!" : "Copy"}
-            </Button>
+            {dnaHash && (
+              <div className="text-sm text-muted-foreground">
+                Hash: {dnaHash}
+              </div>
+            )}
           </div>
         )}
-        
-        <div className="bg-muted/50 rounded-md p-2 overflow-x-auto max-h-[300px] overflow-y-auto">
-          {formatSequence()}
+
+        <div className="relative">
+          {visualizationBuffer ? (
+            <img 
+              src={`data:image/png;base64,${visualizationBuffer.toString('base64')}`}
+              alt="DNA Visualization"
+              className="w-full h-auto rounded-lg"
+            />
+          ) : (
+            <div className="min-h-[200px] flex items-center justify-center text-muted-foreground">
+              Loading visualization...
+            </div>
+          )}
         </div>
-        
-        {dnaHash && (
-          <div className="mt-2 text-sm">
-            <span className="font-medium">DNA Hash:</span>{" "}
-            <code className="bg-muted px-1 py-0.5 rounded text-xs">{dnaHash}</code>
+
+        <div className="mt-4 text-sm text-muted-foreground">
+          <Label>Sequence ({sequence.length} bp)</Label>
+          <div className={`mt-2 font-mono p-2 rounded bg-muted ${displayMode === "colorized" ? "flex flex-wrap" : ""}`}>
+            {displayMode === "colorized" ? (
+              sequence.split("").map((nucleotide, index) => (
+                <span
+                  key={index}
+                  style={{
+                    color: colorScheme[nucleotide as keyof typeof colorScheme] || "#ffffff"
+                  }}
+                >
+                  {nucleotide}
+                </span>
+              ))
+            ) : (
+              sequence
+            )}
           </div>
-        )}
+        </div>
       </CardContent>
     </Card>
   );

@@ -1,6 +1,6 @@
 import 'isomorphic-fetch';
 
-const API_KEY = 'ad453b26-b435-4f73-a653-0d105f8e0583';
+const API_KEY = process.env.SOLANA_TRACKER_API_KEY || 'ad453b26-b435-4f73-a653-0d105f8e0583';
 const BASE_URL = 'https://data.solanatracker.io';
 
 export interface Pool {

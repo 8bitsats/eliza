@@ -41,7 +41,8 @@ export class TradingService {
     constructor() {
         this.solanaTracker = new SolanaTrackerService();
         this.cache = new NodeCache({ stdTTL: 300 }); // 5 minutes cache
-        this.connection = new Connection(process.env.RPC_URL || '');
+        const rpcUrl = (process.env.RPC_URL?.trim() || 'https://api.mainnet-beta.solana.com').replace(/\/+$/, '');
+        this.connection = new Connection(rpcUrl);
     }
 
     async findTradingOpportunities(): Promise<TradingOpportunity[]> {
