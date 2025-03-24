@@ -3,7 +3,11 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createMistral } from "@ai-sdk/mistral";
 import { createGroq } from "@ai-sdk/groq";
 import { createOpenAI } from "@ai-sdk/openai";
+<<<<<<< HEAD
 import { bedrock } from "@ai-sdk/amazon-bedrock";
+=======
+import { getModel } from "./models";
+>>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
 import {
     generateObject as aiGenerateObject,
     generateText as aiGenerateText,
@@ -11,12 +15,17 @@ import {
     type GenerateObjectResult,
     type StepResult as AIStepResult,
 } from "ai";
+<<<<<<< HEAD
+=======
+import { IImageDescriptionService, ModelClass, Service } from "./types";
+>>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
 import { Buffer } from "buffer";
 import { createOllama } from "ollama-ai-provider";
 import OpenAI from "openai";
 import { encodingForModel, type TiktokenModel } from "js-tiktoken";
 // import { AutoTokenizer } from "@huggingface/transformers";
 import Together from "together-ai";
+<<<<<<< HEAD
 import type { ZodSchema } from "zod";
 import { elizaLogger } from "./index.ts";
 import {
@@ -25,14 +34,24 @@ import {
     getImageModelSettings,
     getEndpoint,
 } from "./models.ts";
+=======
+import { elizaLogger } from "./index";
+import { models } from "./models";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+>>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
 import {
     parseBooleanFromText,
     parseJsonArrayFromText,
     parseJSONObjectFromText,
     parseShouldRespondFromText,
+<<<<<<< HEAD
     parseActionResponseFromText,
 } from "./parsing.ts";
 import settings from "./settings.ts";
+=======
+} from "./parsing";
+import settings from "./settings";
+>>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
 import {
     type Content,
     type IAgentRuntime,
@@ -41,6 +60,7 @@ import {
     ModelClass,
     ModelProviderName,
     ServiceType,
+<<<<<<< HEAD
     type ActionResponse,
     // type IVerifiableInferenceAdapter,
     // type VerifiableInferenceOptions,
@@ -343,6 +363,10 @@ function getCloudflareGatewayBaseURL(
 
     return baseURL;
 }
+=======
+} from "./types";
+import { ZodSchema } from "zod";
+>>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
 
 /**
  * Send a message to the model for a text generateText - receive a string back and parse how you'd like

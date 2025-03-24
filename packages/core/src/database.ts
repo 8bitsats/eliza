@@ -9,9 +9,13 @@ import type {
     RAGKnowledgeItem,
     Participant,
     IDatabaseAdapter,
+<<<<<<< HEAD
 } from "./types.ts";
 import { CircuitBreaker } from "./database/CircuitBreaker";
 import { elizaLogger } from "./logger";
+=======
+} from "./types";
+>>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
 
 /**
  * An abstract class representing a database adapter for managing various entities

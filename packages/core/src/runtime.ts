@@ -6,13 +6,20 @@ import {
     composeActionExamples,
     formatActionNames,
     formatActions,
+<<<<<<< HEAD
 } from "./actions.ts";
 import { addHeader, composeContext } from "./context.ts";
+=======
+} from "./actions";
+import { addHeader, composeContext } from "./context";
+import { defaultCharacter } from "./defaultCharacter";
+>>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
 import {
     evaluationTemplate,
     formatEvaluatorExamples,
     formatEvaluatorNames,
     formatEvaluators,
+<<<<<<< HEAD
 } from "./evaluators.ts";
 import { generateText } from "./generation.ts";
 import { formatGoalsAsString, getGoals } from "./goals.ts";
@@ -25,6 +32,18 @@ import { formatPosts } from "./posts.ts";
 import { getProviders } from "./providers.ts";
 import { RAGKnowledgeManager } from "./ragknowledge.ts";
 import settings from "./settings.ts";
+=======
+} from "./evaluators";
+import { generateText } from "./generation";
+import { formatGoalsAsString, getGoals } from "./goals";
+import { elizaLogger, embed, splitChunks } from "./index";
+import { embeddingZeroVector, MemoryManager } from "./memory";
+import { formatActors, formatMessages, getActorDetails } from "./messages";
+import { parseJsonArrayFromText } from "./parsing";
+import { formatPosts } from "./posts";
+import { getProviders } from "./providers";
+import settings from "./settings";
+>>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
 import {
     type Character,
     type Goal,
@@ -51,12 +70,18 @@ import {
     type Actor,
     type Evaluator,
     type Memory,
+<<<<<<< HEAD
     type DirectoryItem,
     type ClientInstance,
 } from "./types.ts";
 import { stringToUuid } from "./uuid.ts";
 import { glob } from "glob";
 import { existsSync } from "fs";
+=======
+} from "./types";
+import { stringToUuid } from "./uuid";
+
+>>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
 /**
  * Represents the runtime environment for an agent, handling message processing,
  * action registration, and interaction with external services like OpenAI and Supabase.

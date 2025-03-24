@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 import type { IAgentRuntime, State, Memory } from "./types.ts";
+=======
+import { IAgentRuntime, State, type Memory } from "./types";
+>>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
 
 /**
  * Formats provider outputs into a string which can be injected into the context.
