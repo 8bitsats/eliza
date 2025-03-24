@@ -1,4 +1,4 @@
-import { PumpFunPlugin } from './pumpfun-plugin';
+import { PumpFunPlugin } from './pumpfun-plugin.js';
 import * as path from 'path';
 import * as fs from 'fs';
 
