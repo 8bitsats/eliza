@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { useOrdinalsContext } from "./OrdinalsContext";
-import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { useOrdinalsContext } from "@/components/ordinals/OrdinalsContext";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2, ChevronLeft, ChevronRight, Image, FileText, FileCode } from "lucide-react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 export function InscriptionsView() {
   const {

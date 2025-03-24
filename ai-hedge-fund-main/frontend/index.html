@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cheshire Terminal Agentic Swarm Powered by Solana and Base</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://unpkg.com/livekit-client@1.15.5/dist/livekit-client.umd.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="app">
+        <!-- Loading Screen -->
+        <div id="loading-screen">
+            <div class="loading-spinner">
+                <i class="fas fa-spinner fa-spin"></i>
+            </div>
+            <p>Connecting to Cheshire Terminal Agentic Swarm...</p>
+        </div>
+
+        <!-- Error Notification -->
+        <div id="notification-container">
+            <div id="connection-error" class="notification error" style="display: none;">
+                <div class="notification-icon">
+                    <i class="fas fa-exclamation-circle"></i>
+                </div>
+                <div class="notification-content">
+                    <h3>Connection Error</h3>
+                    <p>Failed to connect to the agent. Please check your connection and try again.</p>
+                </div>
+                <div class="notification-actions">
+                    <button onclick="window.location.reload()">Retry</button>
+                    <button class="close-notification" data-target="connection-error">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Dashboard -->
+        <div class="dashboard">
+            <!-- Sidebar -->
+            <aside class="sidebar">
+                <div class="logo">
+                    <div class="logo-image">
+                        <img src="https://ukffeuvqlbbpgltfxvus.supabase.co/storage/v1/object/public/art//bang.png" alt="Cheshire Terminal Logo" class="glow-logo">
+                    </div>
+                    <h1>Cheshire Terminal Agentic Swarm Powered by Solana and Base</h1>
+                </div>
+                
+                <nav class="sidebar-nav">
+                    <ul>
+                        <li class="active">
+                            <a href="#"><i class="fas fa-robot"></i> AI Assistant</a>
+                        </li>
+                        <li>
+                            <a href="#"><i class="fas fa-chart-line"></i> Market Data</a>
+                        </li>
+                        <li>
+                            <a href="#"><i class="fas fa-wallet"></i> Portfolio</a>
+                        </li>
+                        <li>
+                            <a href="#"><i class="fas fa-exchange-alt"></i> Transactions</a>
+                        </li>
+                        <li>
+                            <a href="#"><i class="fas fa-cog"></i> Settings</a>
+                        </li>
+                    </ul>
+                </nav>
+                
+                <div class="blockchain-status">
+                    <div class="status-item">
+                        <span class="status-label">Ethereum</span>
+                        <span class="status-indicator online"></span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Solana</span>
+                        <span class="status-indicator online"></span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Base</span>
+                        <span class="status-indicator online"></span>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Main Content -->
+            <main class="main-content">
+                <header class="top-bar">
+                    <div class="breadcrumb">
+                        <span>Dashboard</span>
+                        <i class="fas fa-chevron-right"></i>
+                        <span>Cheshire Terminal Agentic Swarm Powered by Solana and Base</span>
+                    </div>
+                    
+                    <div class="user-controls">
+                        <div class="theme-toggle">
+                            <input type="checkbox" id="theme-switch" class="theme-switch">
+                            <label for="theme-switch" class="theme-switch-label">
+                                <i class="fas fa-moon"></i>
+                                <i class="fas fa-sun"></i>
+                                <span class="toggle-ball"></span>
+                            </label>
+                        </div>
+                        <div class="user-profile">
+                            <img src="https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y" alt="Profile" class="avatar">
+                            <span>User</span>
+                            <i class="fas fa-chevron-down"></i>
+                        </div>
+                    </div>
+                </header>
+
+                <div class="content-wrapper">
+                    <div class="welcome-banner">
+                        <div class="welcome-text">
+                            <h2>Welcome to Cheshire Terminal Agentic Swarm Powered by Solana and Base</h2>
+                            <p>Your personal AI helper for all things crypto. Ask about market trends, portfolio management, or execute transactions.</p>
+                        </div>
+                        <div class="welcome-graphic">
+                            <div class="welcome-logo">
+                                <img src="https://ukffeuvqlbbpgltfxvus.supabase.co/storage/v1/object/public/art//bang.png" alt="Cheshire Terminal Logo" class="glow-logo-large">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="content-grid">
+                        <!-- AI Assistant Panel -->
+                        <div class="panel ai-assistant-panel">
+                            <div class="panel-header">
+                                <h3><i class="fas fa-comment-dots"></i> Chat with AI</h3>
+                                <div class="connection-status">
+                                    <span id="connection-status-indicator" class="status-indicator connecting"></span>
+                                    <span id="connection-status-text">Connecting...</span>
+                                </div>
+                            </div>
+                            
+                            <div class="panel-content">
+                                <div class="video-container">
+                                    <div class="video-overlay">
+                                        <div class="avatar-placeholder">
+                                            <i class="fas fa-user-circle"></i>
+                                        </div>
+                                    </div>
+                                    <video id="remote-video" autoplay playsinline></video>
+                                    <audio id="remote-audio" autoplay></audio>
+                                </div>
+
+                                <div class="controls">
+                                    <button id="toggle-mic" class="control-btn" aria-label="Toggle Microphone">
+                                        <i class="fas fa-microphone" id="mic-icon" aria-hidden="true"></i>
+                                    </button>
+                                    <button id="toggle-speaker" class="control-btn" aria-label="Toggle Speaker">
+                                        <i class="fas fa-volume-up" id="speaker-icon" aria-hidden="true"></i>
+                                    </button>
+                                </div>
+
+                                <div class="chat-container">
+                                    <div id="messages" class="messages"></div>
+                                    <div class="input-container">
+                                        <div class="input-wrapper">
+                                            <input type="text" id="chat-input" placeholder="Ask anything about crypto...">
+                                            <button id="voice-input" aria-label="Voice Input">
+                                                <i class="fas fa-microphone"></i>
+                                            </button>
+                                        </div>
+                                        <button id="send-message">
+                                            <i class="fas fa-paper-plane"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Right Sidebar -->
+                        <div class="right-sidebar">
+                            <!-- Available Commands Panel -->
+                            <div class="panel commands-panel">
+                                <div class="panel-header">
+                                    <h3><i class="fas fa-terminal"></i> Available Commands</h3>
+                                </div>
+                                <div class="panel-content">
+                                    <ul class="command-list">
+                                        <li>
+                                            <div class="command-icon"><i class="fas fa-chart-line"></i></div>
+                                            <div class="command-info">
+                                                <span class="command-name">Check crypto prices</span>
+                                                <span class="command-example">"What's the current price of Bitcoin?"</span>
+                                            </div>
+                                        </li>
+                                        <li>
+                                            <div class="command-icon"><i class="fas fa-wallet"></i></div>
+                                            <div class="command-info">
+                                                <span class="command-name">View portfolio balance</span>
+                                                <span class="command-example">"Show me my portfolio"</span>
+                                            </div>
+                                        </li>
+                                        <li>
+                                            <div class="command-icon"><i class="fas fa-exchange-alt"></i></div>
+                                            <div class="command-info">
+                                                <span class="command-name">Execute trades</span>
+                                                <span class="command-example">"Buy $100 of ETH"</span>
+                                            </div>
+                                        </li>
+                                        <li>
+                                            <div class="command-icon"><i class="fas fa-lightbulb"></i></div>
+                                            <div class="command-info">
+                                                <span class="command-name">Get market insights</span>
+                                                <span class="command-example">"What's trending in crypto today?"</span>
+                                            </div>
+                                        </li>
+                                        <li>
+                                            <div class="command-icon"><i class="fas fa-shield-alt"></i></div>
+                                            <div class="command-info">
+                                                <span class="command-name">Manage wallet</span>
+                                                <span class="command-example">"Secure my wallet"</span>
+                                            </div>
+                                        </li>
+                                    </ul>
+                                </div>
+                            </div>
+
+                            <!-- Agent Management Panel -->
+                            <div class="panel agent-panel">
+                                <div class="panel-header">
+                                    <h3><i class="fas fa-project-diagram"></i> Agent Network</h3>
+                                </div>
+                                <div class="panel-content">
+                                    <div class="agent-types">
+                                        <button id="create-solana-agent" class="agent-button">
+                                            <i class="fas fa-plus-circle"></i>
+                                            <span>Create Solana Agent</span>
+                                        </button>
+                                        <button id="create-base-agent" class="agent-button">
+                                            <i class="fas fa-plus-circle"></i>
+                                            <span>Create Base Agent</span>
+                                        </button>
+                                    </div>
+                                    
+                                    <div class="agent-visualization">
+                                        <h4>Agent Swarm Visualization</h4>
+                                        <div id="agent-swarm-visualization" class="swarm-container">
+                                            <div class="swarm-node main-node">
+                                                <i class="fas fa-brain"></i>
+                                            </div>
+                                            <!-- Agent nodes will be added dynamically by JavaScript -->
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+</body>
+</html>

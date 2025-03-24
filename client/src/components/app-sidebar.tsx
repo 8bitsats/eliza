@@ -16,7 +16,7 @@ import {
 import { apiClient } from "@/lib/api";
 import { NavLink, useLocation } from "react-router-dom";
 import type { UUID } from "@elizaos/core";
-import { Book, Cog, User, Bitcoin } from "lucide-react";
+import { Book, Cog, User, Bitcoin, Coins, Dna, Palette } from "lucide-react";
 import ConnectionStatus from "./connection-status";
 
 export function AppSidebar() {
@@ -73,24 +73,21 @@ export function AppSidebar() {
                             ) : (
                                 <div>
                                     {agents?.map(
-                                        (agent: { id: UUID; name: string }) => (
-                                            <SidebarMenuItem key={agent.id}>
-                                                <NavLink
-                                                    to={`/chat/${agent.id}`}
-                                                >
-                                                    <SidebarMenuButton
-                                                        isActive={location.pathname.includes(
-                                                            agent.id
-                                                        )}
-                                                    >
-                                                        <User />
-                                                        <span>
-                                                            {agent.name}
-                                                        </span>
-                                                    </SidebarMenuButton>
-                                                </NavLink>
-                                            </SidebarMenuItem>
-                                        )
+                                        (agent: { id: UUID; name: string }) => {
+                                            const agentPath = `/chat/${agent.id}`;
+                                            return (
+                                                <SidebarMenuItem key={agent.id}>
+                                                    <NavLink to={agentPath}>
+                                                        <SidebarMenuButton
+                                                            isActive={location.pathname.includes(agent.id)}
+                                                        >
+                                                            <User />
+                                                            <span>{agent.name}</span>
+                                                        </SidebarMenuButton>
+                                                    </NavLink>
+                                                </SidebarMenuItem>
+                                            );
+                                        }
                                     )}
                                 </div>
                             )}
@@ -114,6 +111,27 @@ export function AppSidebar() {
                         <NavLink to="/ordinals">
                             <SidebarMenuButton isActive={location.pathname === "/ordinals"}>
                                 <Bitcoin /> Ordinals
+                            </SidebarMenuButton>
+                        </NavLink>
+                    </SidebarMenuItem>
+                    <SidebarMenuItem>
+                        <NavLink to="/token-launcher">
+                            <SidebarMenuButton isActive={location.pathname === "/token-launcher"}>
+                                <Coins /> Solana Token Launcher
+                            </SidebarMenuButton>
+                        </NavLink>
+                    </SidebarMenuItem>
+                    <SidebarMenuItem>
+                        <NavLink to="/art-studio">
+                            <SidebarMenuButton isActive={location.pathname === "/art-studio"}>
+                                <Palette /> Art Studio
+                            </SidebarMenuButton>
+                        </NavLink>
+                    </SidebarMenuItem>
+                    <SidebarMenuItem>
+                        <NavLink to="/dna-art-generator">
+                            <SidebarMenuButton isActive={location.pathname === "/dna-art-generator"}>
+                                <Dna /> DNA Art Generator
                             </SidebarMenuButton>
                         </NavLink>
                     </SidebarMenuItem>

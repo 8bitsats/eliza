@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useOrdinalsContext } from "./OrdinalsContext";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
 import { ChatView } from "./ChatView";
 import { InscriptionsView } from "./InscriptionsView";
 import { RareSatoshisView } from "./RareSatoshisView";

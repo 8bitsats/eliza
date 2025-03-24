@@ -1,0 +1,9 @@
+{
+  "name": "eliza-custom-actions",
+  "version": "1.0.0",
+  "description": "Custom actions for Eliza agent",
+  "dependencies": {
+    "@fal-ai/client": "^1.3.0",
+    "axios": "^1.6.2"
+  }
+}

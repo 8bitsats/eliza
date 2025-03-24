@@ -1,0 +1,51 @@
+{
+  "name": "agent-nft",
+  "version": "1.0.0",
+  "description": "Plugin for generating agent DNA and minting NFTs using NVIDIA DNA Generator and Metaplex",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w",
+    "test": "jest",
+    "start": "ts-node server.ts",
+    "build:ui": "cd frontend && npm run build && cp -r build/* ../public/"
+  },
+  "keywords": [
+    "nft",
+    "solana",
+    "metaplex",
+    "dna",
+    "nvidia",
+    "agent"
+  ],
+  "author": "Eliza",
+  "license": "MIT",
+  "dependencies": {
+    "@metaplex-foundation/js": "^0.20.1",
+    "@metaplex-foundation/mpl-core": "^1.2.0",
+    "@metaplex-foundation/mpl-token-metadata": "^2.13.0",
+    "@metaplex-foundation/umi": "^1.1.1",
+    "@metaplex-foundation/umi-bundle-defaults": "^1.1.1",
+    "@solana/web3.js": "^1.98.0",
+    "axios": "^1.4.0",
+    "canvas": "^2.11.2",
+    "cors": "^2.8.5",
+    "crypto": "^1.0.1",
+    "express": "^4.18.2",
+    "ts-node": "^10.9.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.15",
+    "@types/express": "^4.17.17",
+    "@types/jest": "^29.5.1",
+    "@types/node": "^18.19.81",
+    "dotenv": "^16.4.7",
+    "jest": "^29.5.0",
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.0.4"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

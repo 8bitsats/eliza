@@ -23,7 +23,10 @@ type OrdinalsContextType = {
     offset: number;
     total: number;
   };
-  filters: Record<string, any>;
+  filters: {
+    order_by: string;
+    order: string;
+  };
   connectToOrdinals: (url?: string) => Promise<void>;
   disconnectFromOrdinals: () => void;
   sendMessage: (text: string) => void;
@@ -32,7 +35,10 @@ type OrdinalsContextType = {
   fetchInscription: (id: string) => Promise<any>;
   fetchInscriptionContent: (id: string) => Promise<any>;
   findRareSatoshis: (rarity: string | string[], limit?: number) => Promise<any>;
-  setFilters: (newFilters: Record<string, any>) => void;
+  updateFilters: (newFilters: Partial<{
+    order_by: string;
+    order: string;
+  }>) => void;
 };
 
 const OrdinalsContext = createContext<OrdinalsContextType | undefined>(undefined);
@@ -68,9 +74,16 @@ export const OrdinalsProvider: React.FC<{ children: ReactNode }> = ({ children }
   
   // Filters
   const [filters, setFilters] = useState({
-    order_by: 'genesis_timestamp',
+    order_by: 'timestamp',
     order: 'desc'
   });
+
+  const updateFilters = (newFilters: Partial<{
+    order_by: string;
+    order: string;
+  }>) => {
+    setFilters(prev => ({ ...prev, ...newFilters }));
+  };
 
   // Initialize services and set up event listeners
   useEffect(() => {
@@ -262,7 +275,7 @@ export const OrdinalsProvider: React.FC<{ children: ReactNode }> = ({ children }
       fetchInscription,
       fetchInscriptionContent,
       findRareSatoshis,
-      setFilters
+      updateFilters
     }}>
       {children}
     </OrdinalsContext.Provider>

@@ -1,0 +1,17 @@
+# Eliza Configuration File
+
+# Custom actions configuration
+actions:
+  - name: generateCharacterArt
+    path: ./custom_actions/generateCharacterArt.ts
+  - name: generateGrokImage
+    path: ./custom_actions/generateGrokImage.ts
+
+# Add more actions as needed
+# - name: anotherAction
+#   path: ./custom_actions/anotherAction.ts
+
+# Characters configuration
+characters:
+  - name: Grok AI
+    path: ./characters/grok.character.json

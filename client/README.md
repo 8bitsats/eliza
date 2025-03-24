@@ -1,50 +1,71 @@
-# React + TypeScript + Vite
+# Eliza Client
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A modern web application for launching and managing Solana tokens with integrated DNA art generation capabilities.
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- Token Launcher with support for Solana blockchain
+- Real-time trending token ticker using Solana Tracker API
+- DNA Art Generator powered by NVIDIA's Health API
+- Modern UI with shadcn/ui components
 
-## Expanding the ESLint configuration
+## Setup
 
-If you are developing a production application, we recommend updating the configuration to enable type aware lint rules:
+1. Clone the repository
 
-- Configure the top-level `parserOptions` property like this:
+2. Install dependencies:
 
-```js
-export default tseslint.config({
-    languageOptions: {
-        // other options...
-        parserOptions: {
-            project: ["./tsconfig.node.json", "./tsconfig.app.json"],
-            tsconfigRootDir: import.meta.dirname,
-        },
-    },
-});
+   ```bash
+   pnpm install
+   ```
+
+3. Copy the example environment file:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+4. Add your API keys to the `.env` file:
+
+   ```env
+   VITE_SOLANA_TRACKER_API_KEY=your_api_key_here
+   ```
+
+## Development
+
+Run the development server:
+
+```bash
+pnpm dev
 ```
 
-- Replace `tseslint.configs.recommended` to `tseslint.configs.recommendedTypeChecked` or `tseslint.configs.strictTypeChecked`
-- Optionally add `...tseslint.configs.stylisticTypeChecked`
-- Install [eslint-plugin-react](https://github.com/jsx-eslint/eslint-plugin-react) and update the config:
+## Building
 
-```js
-// eslint.config.js
-import react from "eslint-plugin-react";
+Build for production:
 
-export default tseslint.config({
-    // Set the react version
-    settings: { react: { version: "18.3" } },
-    plugins: {
-        // Add the react plugin
-        react,
-    },
-    rules: {
-        // other rules...
-        // Enable its recommended rules
-        ...react.configs.recommended.rules,
-        ...react.configs["jsx-runtime"].rules,
-    },
-});
+```bash
+pnpm build
 ```
+
+## Testing
+
+We support multiple testing options:
+
+1. Simple Mock Test
+2. Test Mode on Devnet
+3. Real Token Launch testing
+
+See `TESTING.md` for detailed testing instructions.
+
+## Environment Variables
+
+- `VITE_SOLANA_TRACKER_API_KEY`: API key for Solana Tracker (required for trending tokens feature)
+
+## Technologies
+
+- React + TypeScript
+- Vite
+- shadcn/ui
+- Solana Web3.js
+- NVIDIA Health API
+- Solana Tracker API

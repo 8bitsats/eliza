@@ -130,7 +130,7 @@ Configure image generation in your character file:
 
 ```json
 {
-    "modelProvider": "heurist",
+    "modelProvider": "grok",
     "settings": {
         "imageSettings": {
             "steps": 20,

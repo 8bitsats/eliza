@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { useOrdinalsContext } from "./OrdinalsContext";
-import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { useOrdinalsContext } from "@/components/ordinals/OrdinalsContext";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2 } from "lucide-react";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
-import { Label } from "../ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Label } from "@/components/ui/label";
 
 export function RareSatoshisView() {
   const { findRareSatoshis, rareSatoshis, loading, connectionStatus } = useOrdinalsContext();
@@ -73,7 +73,7 @@ export function RareSatoshisView() {
           
           <div className="space-y-2">
             <Label htmlFor="limit">Result Limit</Label>
-            <Select value={limit.toString()} onValueChange={(value) => setLimit(parseInt(value))}>
+            <Select value={limit.toString()} onValueChange={(value: string) => setLimit(parseInt(value))}>
               <SelectTrigger id="limit">
                 <SelectValue placeholder="Number of results" />
               </SelectTrigger>

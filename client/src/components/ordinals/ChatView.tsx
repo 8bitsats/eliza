@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect } from "react";
 import { useOrdinalsContext } from "./OrdinalsContext";
-import { Input } from "../ui/input";
-import { Button } from "../ui/button";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { Send } from "lucide-react";
-import { ScrollArea } from "../ui/scroll-area";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 export function ChatView() {
   const { messages, sendMessage, connectionStatus } = useOrdinalsContext();
