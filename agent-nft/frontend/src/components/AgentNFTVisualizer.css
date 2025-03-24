@@ -1,0 +1,124 @@
+/* AgentNFTVisualizer.css */
+
+.dna-visualizer {
+  margin: 20px 0;
+}
+
+.dna-sequence {
+  font-family: monospace;
+  font-size: 18px;
+  letter-spacing: 2px;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 10px;
+  background-color: #f5f5f5;
+  border-radius: 4px;
+  margin-bottom: 20px;
+}
+
+.dna-base {
+  font-weight: bold;
+  margin: 0 2px;
+}
+
+.dna-base-A { color: #4CAF50; /* Green */ }
+.dna-base-T { color: #2196F3; /* Blue */ }
+.dna-base-G { color: #FFC107; /* Yellow/Amber */ }
+.dna-base-C { color: #F44336; /* Red */ }
+
+.probability-bar {
+  height: 10px;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.avatar-preview {
+  max-width: 100%;
+  max-height: 250px;
+  border-radius: 8px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.process-step {
+  position: relative;
+  padding: 20px;
+  border-radius: 8px;
+  background-color: #ffffff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  transition: all 0.3s ease;
+}
+
+.process-step.active {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  border-left: 4px solid #3f51b5;
+}
+
+.process-step.completed {
+  border-left: 4px solid #4CAF50;
+}
+
+.process-step.error {
+  border-left: 4px solid #F44336;
+}
+
+.step-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.step-number {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background-color: #e0e0e0;
+  color: #757575;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  margin-right: 10px;
+}
+
+.active .step-number {
+  background-color: #3f51b5;
+  color: white;
+}
+
+.completed .step-number {
+  background-color: #4CAF50;
+  color: white;
+}
+
+.step-content {
+  margin-left: 38px;
+}
+
+.error-message {
+  padding: 10px 15px;
+  background-color: #FFEBEE;
+  color: #D32F2F;
+  border-radius: 4px;
+  margin-top: 20px;
+}
+
+/* Animation for the DNA sequence */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.dna-sequence .dna-base {
+  animation: fadeIn 0.2s ease-in;
+}
+
+/* Animation for completion */
+@keyframes pulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+
+.completed-pulse {
+  animation: pulse 0.5s ease-in-out;
+}
