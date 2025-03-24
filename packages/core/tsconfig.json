@@ -1,7 +1,7 @@
 {
     "compilerOptions": {
         "target": "ESNext",
-        "module": "ESNext",
+        "module": "NodeNext",
         "lib": ["ESNext", "dom"],
         "moduleResolution": "NodeNext",
         "outDir": "./dist",
@@ -24,7 +24,8 @@
             "./node_modules/@types",
             "./types",
             "./node_modules/jest/types"
-        ]
+        ],
+        "moduleDetection": "force"
     },
     "include": ["src/**/*"],
     "exclude": ["node_modules", "dist", "src/**/*.d.ts", "types/**/*.test.ts"]
