@@ -44,6 +44,17 @@
 * [Analyzing Token Performance](tutorials/token-analysis.md)
 * [Custom Token Visualization](tutorials/custom-visualization.md)
 
+## Plugins
+
+### PumpFun Plugin
+
+* [Overview](plugins/pumpfun/README.md)
+* [Installation and Setup](plugins/pumpfun/installation.md)
+* [Basic Usage](plugins/pumpfun/basic-usage.md)
+* [API Reference](plugins/pumpfun/api-reference.md)
+* [Agent Integration](plugins/pumpfun/agent-integration.md)
+* [Examples](plugins/pumpfun/examples.md)
+
 ## Troubleshooting
 
 * [Common Issues](troubleshooting/common-issues.md)
