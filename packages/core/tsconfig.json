@@ -3,7 +3,7 @@
         "target": "ESNext",
         "module": "ESNext",
         "lib": ["ESNext", "dom"],
-        "moduleResolution": "Node",
+        "moduleResolution": "NodeNext",
         "outDir": "./dist",
         "rootDir": "./src",
         "strict": false,
@@ -17,16 +17,14 @@
         "checkJs": false,
         "noEmitOnError": false,
         "moduleDetection": "force",
-<<<<<<< HEAD
         "allowArbitraryExtensions": true,
-        "customConditions": ["@elizaos/source"]
-=======
+        "allowImportingTsExtensions": true,
+        "customConditions": ["@elizaos/source"],
         "typeRoots": [
             "./node_modules/@types",
             "./types",
             "./node_modules/jest/types"
         ]
->>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
     },
     "include": ["src/**/*"],
     "exclude": ["node_modules", "dist", "src/**/*.d.ts", "types/**/*.test.ts"]
