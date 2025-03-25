@@ -1,26 +1,21 @@
 {
-    "name": "@ai16z/client-twitter",
-    "version": "0.0.1",
-    "main": "dist/index.js",
+    "name": "@elizaos/client-twitter",
+    "version": "0.1.0",
     "type": "module",
+    "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "dependencies": {
-        "@ai16z/eliza": "workspace:*",
-        "@metaplex-foundation/js": "^0.20.1",
-        "@solana/spl-token": "0.4.9",
-        "@solana/web3.js": "1.95.4",
-        "agent-twitter-client": "0.0.13",
-        "bs58": "^6.0.0",
-        "glob": "11.0.0"
+        "@elizaos/core": "workspace:*",
+        "tsup": "^8.3.5",
+        "twitter-api-v2": "^1.16.1"
     },
     "devDependencies": {
-        "tsup": "^8.3.5"
+        "@types/node": "^20.11.28",
+        "typescript": "^5.4.2"
     },
     "scripts": {
-        "build": "tsup --format esm --dts",
-        "dev": "tsup --watch"
-    },
-    "peerDependencies": {
-        "whatwg-url": "7.1.0"
+        "build": "tsup src/index.ts --format esm --dts",
+        "dev": "tsup src/index.ts --format esm --dts --watch",
+        "typecheck": "tsc --noEmit"
     }
 }

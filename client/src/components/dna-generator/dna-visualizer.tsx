@@ -46,6 +46,7 @@ export function DNAVisualizer({
   const [copied, setCopied] = useState(false);
   const [displayMode, setDisplayMode] = useState<"colorized" | "text">("colorized");
   const [visualizationBuffer, setVisualizationBuffer] = useState<Buffer | null>(null);
+  const [error, setError] = useState<string | null>(null);
   
   // Reset copied state after 2 seconds
   useEffect(() => {
@@ -59,17 +60,48 @@ export function DNAVisualizer({
   useEffect(() => {
     const generateVisualization = async () => {
       try {
-        const dnaVisualizer = new DNAVisualizer();
-        const buffer = await dnaVisualizer.createVisualization({
-          dnaSequence: sequence,
-          style: visualizationStyle,
-          width,
-          height,
-          colorScheme
+        // Create a canvas element for visualization
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        
+        if (!ctx) {
+          throw new Error('Failed to get canvas context');
+        }
+
+        // Clear the canvas
+        ctx.fillStyle = colorScheme.background;
+        ctx.fillRect(0, 0, width, height);
+
+        // Calculate cell size based on sequence length
+        const cellSize = Math.min(width, height) / Math.sqrt(sequence.length);
+        const padding = cellSize * 0.1;
+
+        // Draw each nucleotide
+        sequence.split('').forEach((nucleotide, index) => {
+          const x = (index % Math.sqrt(sequence.length)) * cellSize + padding;
+          const y = Math.floor(index / Math.sqrt(sequence.length)) * cellSize + padding;
+          
+          ctx.fillStyle = colorScheme[nucleotide as Nucleotide] || colorScheme.background;
+          ctx.fillRect(x, y, cellSize - padding * 2, cellSize - padding * 2);
         });
+
+        // Convert canvas to buffer
+        const buffer = await new Promise<Buffer>((resolve, reject) => {
+          canvas.toBlob((blob) => {
+            if (blob) {
+              resolve(Buffer.from(await blob.arrayBuffer()));
+            } else {
+              reject(new Error('Failed to convert canvas to blob'));
+            }
+          }, 'image/png');
+        });
+
         setVisualizationBuffer(buffer);
       } catch (error) {
         console.error('Error generating DNA visualization:', error);
+        setError('Failed to generate visualization');
       }
     };
 
@@ -122,7 +154,11 @@ export function DNAVisualizer({
         )}
 
         <div className="relative">
-          {visualizationBuffer ? (
+          {error ? (
+            <div className="min-h-[200px] flex items-center justify-center text-muted-foreground">
+              {error}
+            </div>
+          ) : visualizationBuffer ? (
             <img 
               src={`data:image/png;base64,${visualizationBuffer.toString('base64')}`}
               alt="DNA Visualization"

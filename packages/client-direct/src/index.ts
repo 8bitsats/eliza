@@ -25,7 +25,7 @@ import * as fs from "fs";
 import multer from "multer";
 import OpenAI from "openai";
 import * as path from "path";
-import * as zod from "zod"; const z = zod.z;
+import zod from "zod";
 import { createApiRouter } from "./api.js";
 import { createVerifiableLogApiRouter } from "./verifiable-log-api.js";
 
@@ -113,16 +113,29 @@ export class DirectClient {
     public app: express.Application;
     private agents: Map<string, IAgentRuntime>; // container management
     private server: any; // Store server instance
-    public startAgent: Function; // Store startAgent functor
-    public loadCharacterTryPath: Function; // Store loadCharacterTryPath functor
-    public jsonToCharacter: Function; // Store jsonToCharacter functor
+    public startAgent: (runtime: IAgentRuntime) => Promise<void>; // Store startAgent functor
+    public loadCharacterTryPath: (path: string) => Promise<any>; // Store loadCharacterTryPath functor
+    public jsonToCharacter: (json: string) => Promise<any>; // Store jsonToCharacter functor
 
     constructor() {
         elizaLogger.log("DirectClient constructor");
         this.app = express();
-        this.app.use(cors());
         this.agents = new Map();
+        this.server = null;
+        this.startAgent = async (runtime: IAgentRuntime) => {
+            // Implementation will be provided by the caller
+            throw new Error("startAgent not implemented");
+        };
+        this.loadCharacterTryPath = async (path: string) => {
+            // Implementation will be provided by the caller
+            throw new Error("loadCharacterTryPath not implemented");
+        };
+        this.jsonToCharacter = async (json: string) => {
+            // Implementation will be provided by the caller
+            throw new Error("jsonToCharacter not implemented");
+        };
 
+        this.app.use(cors());
         this.app.use(bodyParser.json());
         this.app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -449,52 +462,52 @@ export class DirectClient {
                     template,
                 });
 
-                function createHyperfiOutSchema(
+                async function createHyperfiOutSchema(
                     nearby: string[],
                     availableEmotes: string[]
-                ) {
+                ): Promise<zod.ZodObject<any>> {
                     const lookAtSchema =
                         nearby.length > 1
-                            ? z
+                            ? zod
                                   .union(
-                                      nearby.map((item) => z.literal(item)) as [
-                                          z.ZodLiteral<string>,
-                                          z.ZodLiteral<string>,
-                                          ...z.ZodLiteral<string>[],
+                                      nearby.map((item) => zod.literal(item)) as [
+                                          zod.ZodLiteral<string>,
+                                          zod.ZodLiteral<string>,
+                                          ...zod.ZodLiteral<string>[],
                                       ]
                                   )
                                   .nullable()
                             : nearby.length === 1
-                              ? z.literal(nearby[0]).nullable()
-                              : z.null(); // Fallback for empty array
+                              ? zod.literal(nearby[0]).nullable()
+                              : zod.null(); // Fallback for empty array
 
                     const emoteSchema =
                         availableEmotes.length > 1
-                            ? z
+                            ? zod
                                   .union(
                                       availableEmotes.map((item) =>
-                                          z.literal(item)
+                                          zod.literal(item)
                                       ) as [
-                                          z.ZodLiteral<string>,
-                                          z.ZodLiteral<string>,
-                                          ...z.ZodLiteral<string>[],
+                                          zod.ZodLiteral<string>,
+                                          zod.ZodLiteral<string>,
+                                          ...zod.ZodLiteral<string>[],
                                       ]
                                   )
                                   .nullable()
                             : availableEmotes.length === 1
-                              ? z.literal(availableEmotes[0]).nullable()
-                              : z.null(); // Fallback for empty array
+                              ? zod.literal(availableEmotes[0]).nullable()
+                              : zod.null(); // Fallback for empty array
 
-                    return z.object({
+                    return zod.object({
                         lookAt: lookAtSchema,
                         emote: emoteSchema,
-                        say: z.string().nullable(),
-                        actions: z.array(z.string()).nullable(),
+                        say: zod.string().nullable(),
+                        actions: zod.array(zod.string()).nullable(),
                     });
                 }
 
                 // Define the schema for the expected output
-                const hyperfiOutSchema = createHyperfiOutSchema(
+                const hyperfiOutSchema = await createHyperfiOutSchema(
                     nearby,
                     availableEmotes
                 );
@@ -517,7 +530,7 @@ export class DirectClient {
                 let hfOut;
                 try {
                     hfOut = hyperfiOutSchema.parse(response.object);
-                } catch {
+                } catch (error) {
                     elizaLogger.error(
                         "cant serialize response",
                         response.object

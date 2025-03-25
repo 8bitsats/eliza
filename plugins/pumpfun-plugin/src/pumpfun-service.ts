@@ -33,20 +33,50 @@ interface CreateAndBuyResult {
   bondingCurve?: any;
 }
 
+interface PumpFunServiceOptions {
+  rpcUrl?: string;
+  walletPath?: string;
+}
+
+interface TokenLaunchResult {
+  success: boolean;
+  tokenAddress?: string;
+  tokenBalance?: number;
+  pumpfunUrl?: string;
+  error?: string;
+}
+
+interface TokenTradeResult {
+  success: boolean;
+  tokenBalance?: number;
+  tokenBalanceAfterSell?: number;
+  pumpfunUrl?: string;
+  error?: string;
+}
+
 // PumpFun service class
 export class PumpFunService {
   private sdk: any;
   private wallet: Keypair;
   private connection: Connection;
   private readonly SLIPPAGE_BASIS_POINTS = 100n;
+  private rpcUrl: string;
+  private walletPath: string;
 
-  constructor(privateKeyPath: string, rpcUrl: string) {
-    // Import dynamically to avoid issues with Node.js modules
-    const { PumpFunSDK } = require('/Users/8bit/Desktop/eliza/pumpfun-raydium-cli-tools-main/src/pumpfunsdk/pumpdotfun-sdk/src/pumpfun.js');
-    
+  constructor() {
+    this.walletPath = '';
+    this.rpcUrl = '';
+    this.wallet = Keypair.generate(); // Default empty wallet
+    this.connection = new Connection('https://api.mainnet-beta.solana.com'); // Default connection
+  }
+
+  async init(options: PumpFunServiceOptions): Promise<void> {
+    this.walletPath = options.walletPath || path.join(process.cwd(), 'wallet.json');
+    this.rpcUrl = options.rpcUrl || 'https://api.mainnet-beta.solana.com';
+
     // Load wallet from private key
     try {
-      const privateKeyData = fs.readFileSync(privateKeyPath, 'utf-8');
+      const privateKeyData = fs.readFileSync(this.walletPath, 'utf-8');
       const privateKey = JSON.parse(privateKeyData);
       
       if (Array.isArray(privateKey)) {
@@ -56,13 +86,14 @@ export class PumpFunService {
       } else {
         throw new Error('Invalid private key format');
       }
-    } catch (error) {
-      console.error('Error loading wallet:', error);
-      throw new Error(`Failed to load wallet: ${error.message}`);
+    } catch (error: any) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('Error loading wallet:', errorMessage);
+      throw new Error(`Failed to load wallet: ${errorMessage}`);
     }
 
     // Setup connection
-    this.connection = new Connection(rpcUrl, 'confirmed');
+    this.connection = new Connection(this.rpcUrl, 'confirmed');
     
     // Create provider
     const provider = new AnchorProvider(
@@ -72,6 +103,7 @@ export class PumpFunService {
     );
     
     // Create SDK instance
+    const { PumpFunSDK } = require('/Users/8bit/Desktop/eliza/pumpfun-raydium-cli-tools-main/src/pumpfunsdk/pumpdotfun-sdk/src/pumpfun.js');
     this.sdk = new PumpFunSDK(provider);
   }
 
@@ -86,8 +118,14 @@ export class PumpFunService {
    * Get SOL balance
    */
   async getSOLBalance(): Promise<number> {
-    const balance = await this.connection.getBalance(this.wallet.publicKey);
-    return balance / LAMPORTS_PER_SOL;
+    try {
+      const balance = await this.connection.getBalance(this.wallet.publicKey);
+      return balance / LAMPORTS_PER_SOL;
+    } catch (error: any) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('Error getting SOL balance:', errorMessage);
+      throw new Error(`Failed to get SOL balance: ${errorMessage}`);
+    }
   }
 
   /**
@@ -97,8 +135,9 @@ export class PumpFunService {
     try {
       const { getSPLBalance } = require('/Users/8bit/Desktop/eliza/pumpfun-raydium-cli-tools-main/src/pumpfunsdk/pumpdotfun-sdk/example/util.js');
       return await getSPLBalance(this.connection, new PublicKey(mintAddress), this.wallet.publicKey);
-    } catch (error) {
-      console.error('Error getting token balance:', error);
+    } catch (error: any) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('Error getting token balance:', errorMessage);
       return null;
     }
   }
@@ -159,7 +198,8 @@ export class PumpFunService {
         return { success: false, tokenBalance: undefined };
       }
     } catch (error: any) {
-      console.error('Error creating and buying token:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('Error creating and buying token:', errorMessage);
       return { success: false, tokenBalance: undefined };
     }
   }
@@ -195,7 +235,8 @@ export class PumpFunService {
         return { success: false, tokenBalance: undefined };
       }
     } catch (error: any) {
-      console.error('Error buying token:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('Error buying token:', errorMessage);
       return { success: false, tokenBalance: undefined };
     }
   }
@@ -239,7 +280,8 @@ export class PumpFunService {
         return { success: false, tokenBalanceAfterSell: undefined };
       }
     } catch (error: any) {
-      console.error('Error selling token:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('Error selling token:', errorMessage);
       return { success: false, tokenBalanceAfterSell: undefined };
     }
   }
@@ -266,9 +308,10 @@ export class PumpFunService {
       );
       
       return mintKeypair.publicKey.toString();
-    } catch (error) {
-      console.error('Error generating mint keypair:', error);
-      throw new Error(`Failed to generate mint keypair: ${error.message}`);
+    } catch (error: any) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('Error generating mint keypair:', errorMessage);
+      throw new Error(`Failed to generate mint keypair: ${errorMessage}`);
     }
   }
 }

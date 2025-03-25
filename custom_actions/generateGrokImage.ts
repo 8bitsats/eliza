@@ -1,4 +1,5 @@
 import { Action, IAgentRuntime, Memory, ActionExample, Content } from '../packages/core/src/types';
+// @ts-ignore - Ignoring to suppress missing types error
 import axios from 'axios';
 
 /**
@@ -50,8 +51,13 @@ export const generateGrokImage: Action = {
       // Extract description from the message
       const description = message.content.text;
       
+      // Parse optional parameters if present in the message
+      const imageSize = parseImageSize(description) || "1024x1024";
+      const imageCount = parseImageCount(description) || 1;
+      const responseFormat = "url"; // Default to URL
+      
       // Get the Grok API key from environment or config
-      const apiKey = runtime.getSetting('GROK_API_KEY');
+      const apiKey = runtime.getSetting('XAI_API_KEY') || runtime.getSetting('GROK_API_KEY');
       
       if (!apiKey) {
         // Create error response memory
@@ -60,8 +66,10 @@ export const generateGrokImage: Action = {
           userId: message.userId,
           agentId: runtime.agentId,
           roomId: message.roomId,
+          type: 'grok_image',
+          lastUpdated: new Date(),
           content: {
-            text: "Error: Grok API key is not configured. Please set the GROK_API_KEY in your environment or character configuration."
+            text: "Error: Grok API key is not configured. Please set the XAI_API_KEY or GROK_API_KEY in your environment or character configuration."
           }
         };
         
@@ -72,6 +80,7 @@ export const generateGrokImage: Action = {
       
       console.log(`Generating image with Grok`);
       console.log(`Prompt: ${description}`);
+      console.log(`Size: ${imageSize}, Count: ${imageCount}`);
       
       // Make sure the prompt is Grok-specific
       const grokPrompt = description.toLowerCase().includes('grok') 
@@ -79,11 +88,12 @@ export const generateGrokImage: Action = {
         : `Using Grok's image generation capabilities: ${description}`;
       
       // Send the API request to Grok API (using standard OpenAI-compatible format)
-      const response = await axios.post('https://api.grok.ai/v1/images/generations', {
+      const response = await axios.post('https://api.x.ai/v1/images/generations', {
         prompt: grokPrompt,
-        n: 1, // Generate one image
-        size: "1024x1024", // Standard size
-        response_format: "url" // Get URL to the image
+        n: imageCount, // Generate the specified number of images
+        model: "grok-2-image",
+        size: imageSize,
+        response_format: responseFormat
       }, {
         headers: {
           'Authorization': `Bearer ${apiKey}`,
@@ -91,28 +101,43 @@ export const generateGrokImage: Action = {
         }
       });
       
-      if (response.data && response.data.data && response.data.data[0]?.url) {
-        const imageUrl = response.data.data[0].url;
-        
-        // Create response memory with image attachment
-        const responseContent: Content = {
-          text: "Here's your generated image from Grok:",
-          attachments: [{
-            id: `grok-img-${Date.now()}`,
+      if (response.data && response.data.data && response.data.data.length > 0) {
+        // Process and attach all generated images
+        const attachments = response.data.data.map((imageData: any, index: number) => {
+          const imageUrl = imageData.url;
+          const revisedPrompt = imageData.revised_prompt || "";
+          
+          return {
+            id: `grok-img-${Date.now()}-${index}`,
             url: imageUrl,
-            title: "Generated Grok Image",
+            title: `Generated Grok Image ${index + 1}`,
             source: "Grok",
-            description: grokPrompt,
+            description: revisedPrompt || grokPrompt,
             text: "",
             contentType: "image/png"
-          }]
+          };
+        });
+        
+        // Create response memory with image attachments
+        const responseContent: Content = {
+          text: imageCount > 1 
+            ? `Here are your ${imageCount} generated images from Grok:`
+            : "Here's your generated image from Grok:",
+          attachments
         };
+        
+        // If there's revised prompt info, add it to the response
+        if (response.data.data[0]?.revised_prompt) {
+          responseContent.text += `\n\nGrok revised your prompt to: "${response.data.data[0].revised_prompt}"`;
+        }
         
         const responseMemory: Memory = {
           id: undefined,
           userId: message.userId,
           agentId: runtime.agentId,
           roomId: message.roomId,
+          type: 'grok_image',
+          lastUpdated: new Date(),
           content: responseContent
         };
         
@@ -122,7 +147,7 @@ export const generateGrokImage: Action = {
       } else {
         throw new Error('No image URL in the response');
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error generating image with Grok:', error);
       
       // Create error response memory
@@ -131,8 +156,10 @@ export const generateGrokImage: Action = {
         userId: message.userId,
         agentId: runtime.agentId,
         roomId: message.roomId,
+        type: 'grok_image',
+        lastUpdated: new Date(),
         content: {
-          text: `Sorry, I encountered an error while generating an image with Grok: ${error.message}`
+          text: `Sorry, I encountered an error while generating an image with Grok: ${error.message || 'Unknown error'}`
         }
       };
       
@@ -142,5 +169,73 @@ export const generateGrokImage: Action = {
     }
   }
 };
+
+// Helper function to parse image size from message
+function parseImageSize(message: string): string | null {
+  // Check for common size mentions
+  const lowerMessage = message.toLowerCase();
+  
+  if (lowerMessage.includes("portrait") || lowerMessage.includes("vertical")) {
+    return "1024x1792";
+  } else if (lowerMessage.includes("landscape") || lowerMessage.includes("horizontal")) {
+    return "1792x1024";
+  } else if (lowerMessage.includes("square")) {
+    return "1024x1024";
+  }
+  
+  // Check for specific dimensions
+  const sizeRegex = /(\d+)\s*[x×]\s*(\d+)/i;
+  const match = message.match(sizeRegex);
+  if (match) {
+    const width = parseInt(match[1]);
+    const height = parseInt(match[2]);
+    
+    // Validate that dimensions are within allowed values
+    const validSizes = ["1024x1024", "1024x1792", "1792x1024"];
+    const requestedSize = `${width}x${height}`;
+    
+    if (validSizes.includes(requestedSize)) {
+      return requestedSize;
+    }
+    
+    // Find closest valid size
+    if (width === height) {
+      return "1024x1024";
+    } else if (width > height) {
+      return "1792x1024";
+    } else {
+      return "1024x1792";
+    }
+  }
+  
+  return null;
+}
+
+// Helper function to parse image count from message
+function parseImageCount(message: string): number | null {
+  const lowerMessage = message.toLowerCase();
+  
+  // Check for explicit count mentions
+  const countRegex = /\b(\d+)\s+(images?|pictures?|photos?)\b/i;
+  const match = message.match(countRegex);
+  
+  if (match) {
+    const count = parseInt(match[1]);
+    // Return between 1-4 images
+    return Math.min(Math.max(count, 1), 4);
+  }
+  
+  // Check for multiple or several
+  if (lowerMessage.includes("multiple") || lowerMessage.includes("several")) {
+    return 3;
+  }
+  
+  // Check for pair, couple, two
+  if (lowerMessage.includes("pair") || lowerMessage.includes("couple") || lowerMessage.includes("two images")) {
+    return 2;
+  }
+  
+  return null;
+}
 
 export default generateGrokImage;

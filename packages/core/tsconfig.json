@@ -19,6 +19,7 @@
         "moduleDetection": "force",
         "allowArbitraryExtensions": true,
         "allowImportingTsExtensions": true,
+        "noEmit": true,
         "customConditions": ["@elizaos/source"],
         "typeRoots": [
             "./node_modules/@types",

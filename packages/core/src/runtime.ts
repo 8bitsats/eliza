@@ -6,24 +6,27 @@ import {
     composeActionExamples,
     formatActionNames,
     formatActions,
-} from "./actions";
-import { addHeader, composeContext } from "./context";
-import { defaultCharacter } from "./defaultCharacter";
+} from "./actions.js";
+import { addHeader, composeContext } from "./context.js";
+import { defaultCharacter } from "./defaultCharacter.js";
 import {
     evaluationTemplate,
     formatEvaluatorExamples,
     formatEvaluatorNames,
     formatEvaluators,
-} from "./evaluators";
-import { generateText } from "./generation";
-import { formatGoalsAsString, getGoals } from "./goals";
-import { elizaLogger, embed, splitChunks } from "./index";
-import { embeddingZeroVector, MemoryManager } from "./memory";
-import { formatActors, formatMessages, getActorDetails } from "./messages";
-import { parseJsonArrayFromText } from "./parsing";
-import { formatPosts } from "./posts";
-import { getProviders } from "./providers";
-import settings from "./settings";
+} from "./evaluators.js";
+import { generateText } from "./generation.js";
+import { formatGoalsAsString, getGoals } from "./goals.js";
+import { elizaLogger, embed } from "./index.js";
+import { MemoryManager } from "./memory.js";
+import { formatActors, formatMessages, getActorDetails } from "./messages.js";
+import { parseJsonArrayFromText } from "./parsing.js";
+import { formatPosts } from "./posts.js";
+import { getProviders } from "./providers.js";
+import settings from "./settings.js";
+import { getEmbeddingZeroVector } from "./embedding.js";
+import knowledge from "./knowledge.js";
+import { RAGKnowledgeManager } from "./ragknowledge.js";
 import {
     type Character,
     type Goal,
@@ -52,8 +55,8 @@ import {
     type Memory,
     type DirectoryItem,
     type ClientInstance,
-} from "./types";
-import { stringToUuid } from "./uuid";
+} from "./types.js";
+import { stringToUuid } from "./uuid.js";
 import { glob } from "glob";
 import { existsSync } from "fs";
 
@@ -948,4 +951,10 @@ export class AgentRuntime implements IAgentRuntime {
             return this.character.settings.secrets[key];
         }
         // if not, check if it's in the settings object
-        if (this.character.settings?
+        if (this.character.settings?.[key]) {
+            return this.character.settings[key];
+        }
+        // if nothing else, return null
+        return null;
+    }
+}

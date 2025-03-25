@@ -1,18 +1,14 @@
-<<<<<<< HEAD
-import { getEmbeddingModelSettings, getEndpoint } from "./models.ts";
-import { type IAgentRuntime, ModelProviderName } from "./types.ts";
-import settings from "./settings.ts";
-import elizaLogger from "./logger.ts";
-import LocalEmbeddingModelManager from "./localembeddingManager.ts";
-=======
+import { getEmbeddingModelSettings, getEndpoint } from "./models.js";
+import { type IAgentRuntime, ModelProviderName, ModelClass } from "./types.js";
+import settings from "./settings.js";
+import elizaLogger from "./logger.js";
+import LocalEmbeddingModelManager from "./localembeddingManager.js";
 import { EmbeddingModel, FlagEmbedding } from "fastembed";
 import path from "path";
 import { fileURLToPath } from "url";
-import { models } from "./models";
-import { IAgentRuntime, ModelProviderName, ModelClass } from "./types";
+import { models } from "./models.js";
 import fs from "fs";
-import { trimTokens } from "./generation";
-import settings from "./settings";
+import { trimTokens } from "./generation.js";
 
 function getRootPath() {
     const __filename = fileURLToPath(import.meta.url);
@@ -25,7 +21,6 @@ function getRootPath() {
 
     return path.resolve(__dirname, "..");
 }
->>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
 
 interface EmbeddingOptions {
     model: string;

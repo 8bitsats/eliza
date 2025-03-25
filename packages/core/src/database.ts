@@ -9,13 +9,9 @@ import type {
     RAGKnowledgeItem,
     Participant,
     IDatabaseAdapter,
-<<<<<<< HEAD
-} from "./types.ts";
-import { CircuitBreaker } from "./database/CircuitBreaker";
-import { elizaLogger } from "./logger";
-=======
-} from "./types";
->>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
+} from "./types.js";
+import { CircuitBreaker } from "./database/CircuitBreaker.js";
+import { elizaLogger } from "./logger.js";
 
 /**
  * An abstract class representing a database adapter for managing various entities
@@ -25,7 +21,7 @@ export abstract class DatabaseAdapter<DB = any> implements IDatabaseAdapter {
     /**
      * The database instance.
      */
-    db: DB;
+    db!: DB;
 
     /**
      * Circuit breaker instance used to handle fault tolerance and prevent cascading failures.
@@ -336,13 +332,6 @@ export abstract class DatabaseAdapter<DB = any> implements IDatabaseAdapter {
      * @returns A Promise that resolves to a boolean indicating success or failure.
      */
     abstract removeParticipant(userId: UUID, roomId: UUID): Promise<boolean>;
-
-    /**
-     * Retrieves participants associated with a specific account.
-     * @param userId The UUID of the account.
-     * @returns A Promise that resolves to an array of Participant objects.
-     */
-    abstract getParticipantsForAccount(userId: UUID): Promise<Participant[]>;
 
     /**
      * Retrieves participants associated with a specific account.

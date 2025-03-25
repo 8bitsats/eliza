@@ -14,6 +14,20 @@ export interface DNAGenerationOptions {
   enableSampledProbs?: boolean;
   /** Starting sequence for the DNA generation */
   startSequence?: string;
+  /** Visualization style for the DNA */
+  visualizationStyle?: string;
+  /** Model to use for generation */
+  model?: string;
+  /** Prompt for generation */
+  prompt?: string;
+  /** Width of the visualization */
+  width?: number;
+  /** Height of the visualization */
+  height?: number;
+  /** Number of steps for generation */
+  steps?: number;
+  /** Random seed for generation */
+  seed?: number;
 }
 
 // Types for DNA response

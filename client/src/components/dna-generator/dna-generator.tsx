@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { DNAVisualizer, Nucleotide } from "./dna-visualizer";
+import { DNAGeneratorService } from '@/services/dna-service';
 
 interface DNAGeneratorProps {
   onDNAGenerate?: (sequence: string) => void;
@@ -52,13 +53,28 @@ export function DNAGenerator({ onDNAGenerate, initialSequence }: DNAGeneratorPro
       setIsLoading(true);
       setError(null);
 
-      // Here you would typically call your DNA generation service
-      // For now, we'll just use the manually entered sequence
-      if (onDNAGenerate) {
-        onDNAGenerate(sequence);
+      // Call NVIDIA's DNA Generator API
+      const response = await DNAGeneratorService.generateDNA({
+        sequence: sequence,
+        parameters: {
+          temperature: 0.7,
+          top_k: 50,
+          top_p: 0.9,
+          max_length: 1000
+        }
+      });
+
+      if (response.success) {
+        const generatedSequence = response.sequence;
+        setSequence(generatedSequence);
+        if (onDNAGenerate) {
+          onDNAGenerate(generatedSequence);
+        }
+      } else {
+        throw new Error(response.error || 'Failed to generate DNA sequence');
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to generate DNA sequence");
+      setError(err instanceof Error ? err.message : 'Failed to generate DNA sequence');
     } finally {
       setIsLoading(false);
     }

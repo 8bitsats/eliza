@@ -1,9 +1,31 @@
 {
-    "extends": "../core/tsconfig.json",
-    "compilerOptions": {
-        "outDir": "dist",
-        "rootDir": "src",
-        "module": "NodeNext"
-    },
-    "include": ["src/**/*.ts"]
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "NodeNext",
+    "lib": ["ESNext", "dom"],
+    "moduleResolution": "NodeNext",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "resolveJsonModule": true,
+    "noImplicitAny": true,
+    "allowJs": true,
+    "checkJs": false,
+    "noEmitOnError": true,
+    "moduleDetection": "force",
+    "allowArbitraryExtensions": true,
+    "allowImportingTsExtensions": true,
+    "emitDeclarationOnly": true,
+    "typeRoots": [
+      "./node_modules/@types",
+      "./types"
+    ]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "src/**/*.d.ts"]
 }

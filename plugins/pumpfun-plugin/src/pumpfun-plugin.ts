@@ -1,155 +1,176 @@
-import { PumpFunService, TokenMetadata } from './pumpfun-service';
-import * as fs from 'fs';
-import * as path from 'path';
+import { Plugin, PluginContext } from '@elizaos/core';
+import { PumpFunService } from './pumpfun-service.js';
+import fs from 'fs';
+import path from 'path';
 
-/**
- * PumpFun Plugin for launching and trading tokens on PumpFun via an agent
- */
-export class PumpFunPlugin {
-  private service: PumpFunService;
+export interface PumpFunPluginOptions {
+  rpcUrl?: string;
+  walletPath?: string;
+}
+
+export class PumpFunPlugin implements Plugin {
+  private service: PumpFunService | null = null;
+  private options: PumpFunPluginOptions;
   private configPath: string;
-  
-  /**
-   * Constructor for PumpFunPlugin
-   * @param privateKeyPath Path to the wallet private key file
-   * @param rpcUrl Solana RPC URL
-   * @param configDir Directory to store configuration and generated files
-   */
-  constructor(privateKeyPath: string, rpcUrl: string, configDir: string) {
-    this.service = new PumpFunService(privateKeyPath, rpcUrl);
-    this.configPath = configDir;
-    
-    // Ensure config directory exists
-    if (!fs.existsSync(this.configPath)) {
-      fs.mkdirSync(this.configPath, { recursive: true });
+
+  constructor(options: PumpFunPluginOptions = {}) {
+    this.options = options;
+    this.configPath = path.join(process.cwd(), 'config');
+  }
+
+  async init(context: PluginContext): Promise<void> {
+    try {
+      this.service = new PumpFunService();
+      await this.service.init(this.options);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to initialize PumpFun plugin: ${errorMessage}`);
     }
   }
 
-  /**
-   * Get wallet info including address and balance
-   */
   async getWalletInfo(): Promise<{ address: string; balance: number }> {
-    const address = this.service.getWalletPublicKey();
-    const balance = await this.service.getSOLBalance();
-    return { address, balance };
+    try {
+      if (!this.service) {
+        throw new Error('PumpFun service not initialized');
+      }
+      const address = this.service.getWalletPublicKey();
+      const balance = await this.service.getSOLBalance();
+      return { address, balance };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to get wallet info: ${errorMessage}`);
+    }
   }
 
-  /**
-   * Launch a new token on PumpFun
-   * @param name Token name
-   * @param symbol Token symbol
-   * @param description Token description
-   * @param initialBuyAmount Initial buy amount in SOL
-   * @param imagePath Path to token image file
-   * @param metadata Additional metadata (telegram, twitter, website)
-   */
   async launchToken(
     name: string,
     symbol: string,
-    description: string,
     initialBuyAmount: number,
     imagePath: string,
     metadata: { telegram?: string; twitter?: string; website?: string }
-  ): Promise<any> {
+  ): Promise<{
+    success: boolean;
+    tokenAddress?: string;
+    tokenBalance?: number;
+    pumpfunUrl?: string;
+    keypairPath?: string;
+    error?: string;
+  }> {
     try {
+      if (!this.service) {
+        throw new Error('PumpFun service not initialized');
+      }
+
       // Generate mint keypair
       const mintKeypairPath = path.join(this.configPath, `${symbol.toLowerCase()}_token_keypair.json`);
-      await this.service.generateMintKeypair(mintKeypairPath);
-      
-      // Prepare token metadata
-      const imageFile = fs.readFileSync(imagePath);
-      const tokenMetadata: TokenMetadata = {
+
+      // Launch token
+      const result = await this.service.launchToken(
         name,
         symbol,
-        description,
-        ...metadata,
-        file: new Blob([imageFile])
-      };
-      
-      // Create and buy token
-      const result = await this.service.createAndBuyToken(
-        mintKeypairPath,
-        tokenMetadata,
-        initialBuyAmount
+        initialBuyAmount,
+        imagePath,
+        metadata
       );
-      
+
       return {
-        success: result.success,
-        tokenAddress: result.mintAddress,
-        tokenBalance: result.tokenBalance,
-        pumpfunUrl: result.mintAddress ? `https://pump.fun/${result.mintAddress}` : undefined,
+        success: true,
+        tokenAddress: result.tokenAddress,
+        tokenBalance: result.tokenBalance ?? undefined,
+        pumpfunUrl: result.pumpfunUrl,
         keypairPath: mintKeypairPath
       };
     } catch (error) {
-      console.error('Error launching token:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
-        error: error.message
+        error: `Failed to launch token: ${errorMessage}`
       };
     }
   }
 
-  /**
-   * Buy tokens on PumpFun
-   * @param tokenAddress Token mint address
-   * @param solAmount Amount of SOL to spend
-   */
-  async buyToken(tokenAddress: string, solAmount: number): Promise<any> {
+  async buyToken(
+    tokenAddress: string,
+    solAmount: number
+  ): Promise<{
+    success: boolean;
+    tokenBalance?: number;
+    pumpfunUrl?: string;
+    error?: string;
+  }> {
     try {
+      if (!this.service) {
+        throw new Error('PumpFun service not initialized');
+      }
+
       const result = await this.service.buyToken(tokenAddress, solAmount);
       return {
-        success: result.success,
-        tokenBalance: result.tokenBalance,
+        success: true,
+        tokenBalance: result.tokenBalance ?? undefined,
         pumpfunUrl: `https://pump.fun/${tokenAddress}`
       };
     } catch (error) {
-      console.error('Error buying token:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
-        error: error.message
+        error: `Failed to buy token: ${errorMessage}`
       };
     }
   }
 
-  /**
-   * Sell tokens on PumpFun
-   * @param tokenAddress Token mint address
-   * @param sellPercentage Percentage of tokens to sell (0.0 to 1.0)
-   */
-  async sellToken(tokenAddress: string, sellPercentage: number): Promise<any> {
+  async sellToken(
+    tokenAddress: string,
+    sellPercentage: number
+  ): Promise<{
+    success: boolean;
+    tokenBalanceAfterSell?: number;
+    pumpfunUrl?: string;
+    error?: string;
+  }> {
     try {
+      if (!this.service) {
+        throw new Error('PumpFun service not initialized');
+      }
+
       const result = await this.service.sellToken(tokenAddress, sellPercentage);
       return {
-        success: result.success,
-        tokenBalance: result.tokenBalanceAfterSell,
+        success: true,
+        tokenBalanceAfterSell: result.tokenBalanceAfterSell ?? undefined,
         pumpfunUrl: `https://pump.fun/${tokenAddress}`
       };
     } catch (error) {
-      console.error('Error selling token:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
-        error: error.message
+        error: `Failed to sell token: ${errorMessage}`
       };
     }
   }
 
-  /**
-   * Get token balance
-   * @param tokenAddress Token mint address
-   */
-  async getTokenBalance(tokenAddress: string): Promise<any> {
+  async getTokenBalance(
+    tokenAddress: string
+  ): Promise<{
+    success: boolean;
+    tokenBalance?: number;
+    pumpfunUrl?: string;
+    error?: string;
+  }> {
     try {
+      if (!this.service) {
+        throw new Error('PumpFun service not initialized');
+      }
+
       const balance = await this.service.getTokenBalance(tokenAddress);
       return {
         success: true,
-        tokenBalance: balance,
+        tokenBalance: balance ?? undefined,
         pumpfunUrl: `https://pump.fun/${tokenAddress}`
       };
     } catch (error) {
-      console.error('Error getting token balance:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         success: false,
-        error: error.message
+        error: `Failed to get token balance: ${errorMessage}`
       };
     }
   }

@@ -1,49 +1,38 @@
-import { PumpFunAgentIntegration } from './agent-integration';
-// Define a simple interface for keypair instead of importing from @solana/web3.js
-interface KeypairInterface {
-  publicKey: { toString: () => string };
-  secretKey: Uint8Array;
-}
-
-// Mock Keypair class for generating keypairs
-class Keypair implements KeypairInterface {
-  publicKey: { toString: () => string };
-  secretKey: Uint8Array;
-
-  constructor(pubKey: string, secretKey: Uint8Array) {
-    this.publicKey = { toString: () => pubKey };
-    this.secretKey = secretKey;
-  }
-
-  static generate(): KeypairInterface {
-    // Create a random keypair (just for simulation)
-    const secretKey = new Uint8Array(64).map(() => Math.floor(Math.random() * 256));
-    const pubKey = `SolanaPublicKey${Math.random().toString(36).substring(2, 15)}`;
-    return new Keypair(pubKey, secretKey);
-  }
-}
+import { PumpFunAgentIntegration } from './agent-integration.js';
+import { PublicKey } from '@solana/web3.js';
+import BN from 'bn.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 
-// Configuration directories
-const CONFIG_DIR = path.join(os.homedir(), '.config', 'eliza', 'pumpfun');
-const WALLET_DIR = path.join(CONFIG_DIR, 'wallets');
-const IMAGES_DIR = path.join(CONFIG_DIR, 'images');
-const TOKEN_DIR = path.join(CONFIG_DIR, 'tokens');
+// Define interfaces for better type safety
+interface KeypairInterface {
+  publicKey: { toString: () => string };
+  secretKey: Uint8Array;
+}
 
-// Configuration file for storing wallet info
-const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+interface TokenLaunchConfig {
+  name: string;
+  symbol: string;
+  description: string;
+  initialSupply: number;
+  decimals: number;
+  royaltyBps: number;
+}
 
-// Default RPC URL
-const DEFAULT_RPC_URL = 'https://api.mainnet-beta.solana.com';
+interface TokenLaunchResult {
+  tokenMint: PublicKey;
+  tokenAccount: PublicKey;
+  metadata: any;
+}
 
-// Retry settings
-const MAX_RETRIES = 3;
-const RETRY_DELAY = 2000;
+interface ProcessedLine {
+  type: 'stdout' | 'stderr';
+  content: string;
+}
 
-export interface TokenLaunchOptions {
+interface TokenLaunchOptions {
   name: string;
   symbol: string;
   description: string;
@@ -59,7 +48,7 @@ export interface TokenLaunchOptions {
   generateViaAgent?: boolean;
 }
 
-export interface TokenTradeOptions {
+interface TokenTradeOptions {
   tokenAddress: string;
   solAmount?: number;
   percentage?: number;
@@ -68,7 +57,7 @@ export interface TokenTradeOptions {
   retryDelay?: number;
 }
 
-export interface TokenResult {
+interface TokenResult {
   success: boolean;
   error?: string;
   tokenAddress?: string;
@@ -78,7 +67,7 @@ export interface TokenResult {
   imageUrl?: string;
 }
 
-export interface WalletResult {
+interface WalletResult {
   success: boolean;
   error?: string;
   address?: string;
@@ -86,7 +75,7 @@ export interface WalletResult {
   name?: string;
 }
 
-export interface TokenInfo {
+interface TokenInfo {
   name: string;
   symbol: string;
   address: string;
@@ -105,19 +94,24 @@ export class TokenLauncherService {
     activeWallet: string | null;
     wallets: Array<{ name: string, path: string }>;
   };
-  
+
   constructor() {
     // Ensure directories exist
+    const CONFIG_DIR = path.join(os.homedir(), '.config', 'eliza', 'pumpfun');
+    const WALLET_DIR = path.join(CONFIG_DIR, 'wallets');
+    const IMAGES_DIR = path.join(CONFIG_DIR, 'images');
+    const TOKEN_DIR = path.join(CONFIG_DIR, 'tokens');
     [CONFIG_DIR, WALLET_DIR, IMAGES_DIR, TOKEN_DIR].forEach(dir => {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
     });
-    
+
     // Initialize or load configuration
+    const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
     if (!fs.existsSync(CONFIG_FILE)) {
       this.config = {
-        rpcUrl: DEFAULT_RPC_URL,
+        rpcUrl: 'https://api.mainnet-beta.solana.com',
         activeWallet: null,
         wallets: []
       };
@@ -125,38 +119,38 @@ export class TokenLauncherService {
     } else {
       this.config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
     }
-    
+
     // Initialize agent if wallet is configured
     this.initializeAgent();
   }
-  
+
   /**
    * Initialize the PumpFun agent
    */
-  private initializeAgent() {
+  private initializeAgent(): void {
     if (!this.config.activeWallet) {
       console.log('No active wallet configured');
       return;
     }
-    
+
     const activeWalletInfo = this.config.wallets.find(w => w.name === this.config.activeWallet);
     if (!activeWalletInfo) {
       console.log('Active wallet not found in configuration');
       return;
     }
-    
+
     try {
       this.pumpFunAgent = new PumpFunAgentIntegration(
         activeWalletInfo.path,
         this.config.rpcUrl,
-        TOKEN_DIR
+        path.join(os.homedir(), '.config', 'eliza', 'pumpfun', 'tokens')
       );
       console.log('PumpFun agent initialized successfully with wallet:', this.config.activeWallet);
     } catch (error) {
       console.error('Failed to initialize PumpFun agent:', error);
     }
   }
-  
+
   /**
    * Get wallet information
    */
@@ -164,23 +158,23 @@ export class TokenLauncherService {
     if (!this.pumpFunAgent) {
       return await this.setupWallet();
     }
-    
+
     try {
       const walletInfo = await this.pumpFunAgent.getWalletInfo();
       const lines = walletInfo.split('\n');
       const addressLine = lines.find(line => line.includes('Wallet Address:'));
       const balanceLine = lines.find(line => line.includes('SOL Balance:'));
-      
+
       if (!addressLine || !balanceLine) {
         return {
           success: false,
           error: 'Failed to parse wallet information'
         };
       }
-      
+
       const address = addressLine.replace('Wallet Address:', '').trim();
       const balance = parseFloat(balanceLine.replace('SOL Balance:', '').replace('SOL', '').trim());
-      
+
       return {
         success: true,
         address,
@@ -195,7 +189,7 @@ export class TokenLauncherService {
       };
     }
   }
-  
+
   /**
    * Set up a new wallet or use an existing one
    */
@@ -203,35 +197,35 @@ export class TokenLauncherService {
     try {
       // Generate wallet name if not provided
       const walletName = name || `wallet-${uuidv4().substring(0, 8)}`;
-      const walletPath = path.join(WALLET_DIR, `${walletName}.json`);
-      
+      const walletPath = path.join(path.join(os.homedir(), '.config', 'eliza', 'pumpfun', 'wallets'), `${walletName}.json`);
+
       // If wallet already exists with this name, use it
       const existingWallet = this.config.wallets.find(w => w.name === walletName);
       if (existingWallet) {
         this.config.activeWallet = walletName;
-        fs.writeFileSync(CONFIG_FILE, JSON.stringify(this.config, null, 2), 'utf-8');
+        fs.writeFileSync(path.join(os.homedir(), '.config', 'eliza', 'pumpfun', 'config.json'), JSON.stringify(this.config, null, 2), 'utf-8');
         this.initializeAgent();
-        
+
         return await this.getWallet();
       }
-      
+
       // For now, we'll assume wallet exists in the pumpfun-raydium-cli-tools-main directory
       const externalWalletPath = path.join(
         process.cwd(), '..', '..', 'pumpfun-raydium-cli-tools-main', 'data', 'payer_keypair', 'dev-wallet.json'
       );
-      
+
       if (fs.existsSync(externalWalletPath)) {
         // Copy the wallet file
         fs.copyFileSync(externalWalletPath, walletPath);
-        
+
         // Update config
         this.config.wallets.push({ name: walletName, path: walletPath });
         this.config.activeWallet = walletName;
-        fs.writeFileSync(CONFIG_FILE, JSON.stringify(this.config, null, 2), 'utf-8');
-        
+        fs.writeFileSync(path.join(os.homedir(), '.config', 'eliza', 'pumpfun', 'config.json'), JSON.stringify(this.config, null, 2), 'utf-8');
+
         // Initialize agent
         this.initializeAgent();
-        
+
         return await this.getWallet();
       } else {
         // Try to create a new wallet
@@ -241,15 +235,15 @@ export class TokenLauncherService {
           JSON.stringify(Array.from(newKeypair.secretKey)),
           'utf-8'
         );
-        
+
         // Update config
         this.config.wallets.push({ name: walletName, path: walletPath });
         this.config.activeWallet = walletName;
-        fs.writeFileSync(CONFIG_FILE, JSON.stringify(this.config, null, 2), 'utf-8');
-        
+        fs.writeFileSync(path.join(os.homedir(), '.config', 'eliza', 'pumpfun', 'config.json'), JSON.stringify(this.config, null, 2), 'utf-8');
+
         // Initialize agent
         this.initializeAgent();
-        
+
         return {
           success: true,
           address: newKeypair.publicKey.toString(),
@@ -265,7 +259,7 @@ export class TokenLauncherService {
       };
     }
   }
-  
+
   /**
    * Launch a new token
    */
@@ -280,11 +274,11 @@ export class TokenLauncherService {
         };
       }
     }
-    
+
     try {
       // Retry logic
       return options.retry
-        ? await this.retry(() => this.launchTokenInternal(options), options.maxRetries || MAX_RETRIES, options.retryDelay || RETRY_DELAY)
+        ? await this.retry(() => this.launchTokenInternal(options), options.maxRetries || 3, options.retryDelay || 2000)
         : await this.launchTokenInternal(options);
     } catch (error) {
       console.error('Error launching token:', error);
@@ -294,7 +288,7 @@ export class TokenLauncherService {
       };
     }
   }
-  
+
   /**
    * Internal method to launch a token
    */
@@ -311,10 +305,10 @@ export class TokenLauncherService {
       imagePath = options.image;
     } else {
       const imageName = options.imageName || `${options.symbol.toLowerCase()}-${Date.now()}.png`;
-      imagePath = path.join(IMAGES_DIR, imageName);
+      imagePath = path.join(path.join(os.homedir(), '.config', 'eliza', 'pumpfun', 'images'), imageName);
       fs.writeFileSync(imagePath, options.image);
     }
-    
+
     // Launch token
     const launchResult = await this.pumpFunAgent!.launchToken(
       options.name,
@@ -326,7 +320,7 @@ export class TokenLauncherService {
       options.twitter,
       options.website
     );
-    
+
     // Parse the result
     if (launchResult.includes('Successfully launched token')) {
       const tokenAddress = launchResult
@@ -334,22 +328,22 @@ export class TokenLauncherService {
         .find(line => line.includes('Token Address:'))
         ?.replace('Token Address:', '')
         .trim();
-      
+
       const tokenBalance = launchResult
         .split('\n')
         .find(line => line.includes('Initial Balance:'))
         ?.replace('Initial Balance:', '')
         .trim();
-      
+
       const pumpfunUrl = launchResult
         .split('\n')
         .find(line => line.includes('PumpFun URL:'))
         ?.replace('PumpFun URL:', '')
         .trim();
-      
+
       const imageName = path.basename(imagePath);
       const imageUrl = `/api/token/image/${imageName}`;
-      
+
       return {
         success: true,
         tokenAddress,
@@ -364,7 +358,7 @@ export class TokenLauncherService {
       };
     }
   }
-  
+
   /**
    * Buy tokens
    */
@@ -379,18 +373,18 @@ export class TokenLauncherService {
         };
       }
     }
-    
+
     if (!options.solAmount || options.solAmount <= 0) {
       return {
         success: false,
         error: 'Invalid SOL amount'
       };
     }
-    
+
     try {
       // Retry logic
       return options.retry
-        ? await this.retry(() => this.buyTokenInternal(options), options.maxRetries || MAX_RETRIES, options.retryDelay || RETRY_DELAY)
+        ? await this.retry(() => this.buyTokenInternal(options), options.maxRetries || 3, options.retryDelay || 2000)
         : await this.buyTokenInternal(options);
     } catch (error) {
       console.error('Error buying token:', error);
@@ -400,14 +394,14 @@ export class TokenLauncherService {
       };
     }
   }
-  
+
   /**
    * Internal method to buy tokens
    */
   private async buyTokenInternal(options: TokenTradeOptions): Promise<TokenResult> {
     // Buy token
     const buyResult = await this.pumpFunAgent!.buyToken(options.tokenAddress, options.solAmount!);
-    
+
     // Parse the result
     if (buyResult.includes('Successfully bought tokens')) {
       const tokenBalance = buyResult
@@ -415,13 +409,13 @@ export class TokenLauncherService {
         .find(line => line.includes('New Token Balance:'))
         ?.replace('New Token Balance:', '')
         .trim();
-      
+
       const pumpfunUrl = buyResult
         .split('\n')
         .find(line => line.includes('PumpFun URL:'))
         ?.replace('PumpFun URL:', '')
         .trim();
-      
+
       return {
         success: true,
         tokenAddress: options.tokenAddress,
@@ -436,7 +430,7 @@ export class TokenLauncherService {
       };
     }
   }
-  
+
   /**
    * Sell tokens
    */
@@ -451,18 +445,18 @@ export class TokenLauncherService {
         };
       }
     }
-    
+
     if (!options.percentage || options.percentage <= 0 || options.percentage > 100) {
       return {
         success: false,
         error: 'Invalid percentage (must be between 1 and 100)'
       };
     }
-    
+
     try {
       // Retry logic
       return options.retry
-        ? await this.retry(() => this.sellTokenInternal(options), options.maxRetries || MAX_RETRIES, options.retryDelay || RETRY_DELAY)
+        ? await this.retry(() => this.sellTokenInternal(options), options.maxRetries || 3, options.retryDelay || 2000)
         : await this.sellTokenInternal(options);
     } catch (error) {
       console.error('Error selling token:', error);
@@ -472,14 +466,14 @@ export class TokenLauncherService {
       };
     }
   }
-  
+
   /**
    * Internal method to sell tokens
    */
   private async sellTokenInternal(options: TokenTradeOptions): Promise<TokenResult> {
     // Sell token
     const sellResult = await this.pumpFunAgent!.sellToken(options.tokenAddress, options.percentage!);
-    
+
     // Parse the result
     if (sellResult.includes('Successfully sold tokens')) {
       const tokenBalance = sellResult
@@ -487,13 +481,13 @@ export class TokenLauncherService {
         .find(line => line.includes('Remaining Token Balance:'))
         ?.replace('Remaining Token Balance:', '')
         .trim();
-      
+
       const pumpfunUrl = sellResult
         .split('\n')
         .find(line => line.includes('PumpFun URL:'))
         ?.replace('PumpFun URL:', '')
         .trim();
-      
+
       return {
         success: true,
         tokenAddress: options.tokenAddress,
@@ -508,7 +502,7 @@ export class TokenLauncherService {
       };
     }
   }
-  
+
   /**
    * List tokens
    */
@@ -523,18 +517,18 @@ export class TokenLauncherService {
         };
       }
     }
-    
+
     try {
       // List tokens
       const listResult = await this.pumpFunAgent!.listTokens();
-      
+
       // Parse the result
       if (listResult.includes('Tokens launched by this wallet:')) {
         const tokenEntries = listResult.split('\n\n').slice(1);
         const tokens = tokenEntries.map(entry => {
           const lines = entry.split('\n');
           const token: Partial<TokenInfo> = {};
-          
+
           lines.forEach(line => {
             if (line.includes('Name:')) {
               token.name = line.replace('Name:', '').trim();
@@ -548,15 +542,15 @@ export class TokenLauncherService {
               token.pumpfunUrl = line.replace('PumpFun URL:', '').trim();
             }
           });
-          
+
           // Get token balance from external API (mocked for now)
           token.balance = Math.floor(Math.random() * 1000000);
           token.price = 0.0000001 * (1 + Math.random());
           token.value = token.balance! * token.price;
-          
+
           return token as TokenInfo;
         });
-        
+
         return {
           success: true,
           tokens
@@ -580,7 +574,7 @@ export class TokenLauncherService {
       };
     }
   }
-  
+
   /**
    * Helper method to retry operations
    */

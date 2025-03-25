@@ -1,5 +1,5 @@
 import { vi } from 'vitest'
-import { setupTestDatabase } from './src/database'
+import { setupTestDatabase } from './src/database/testDatabase'
 import { setupTestCache } from './src/cache'
 import { setupTestLogger } from './src/logger'
 
