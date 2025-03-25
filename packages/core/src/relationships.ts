@@ -1,8 +1,9 @@
-<<<<<<< HEAD
-import type { IAgentRuntime, Relationship, UUID } from "./types.ts";
-=======
-import { IAgentRuntime, type Relationship, type UUID } from "./types";
->>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
+import type { IAgentRuntime, UUID } from "./types.ts";
+import { z } from "zod";
+import { embed } from "./embedding.ts";
+import { getMemory, MemoryManager, type Memory, type Content } from "./memory.ts";
+import { getRelationshipScore, calculateScore } from "./scoring.ts";
+import { stringToUuid } from "./uuid.ts";
 
 export async function createRelationship({
     runtime,
@@ -66,4 +67,66 @@ export async function formatRelationships({
     );
 
     return formattedRelationships;
+}
+
+export interface RelationshipData {
+    id: UUID;
+    agentId: UUID;
+    userId: UUID;
+    score: number;
+    lastUpdated: Date;
+}
+
+export interface RelationshipManager {
+    getRelationship(agentId: UUID, userId: UUID): Promise<RelationshipData | null>;
+    updateRelationship(agentId: UUID, userId: UUID, score: number): Promise<void>;
+}
+
+export class DefaultRelationshipManager implements RelationshipManager {
+    private memoryManager: MemoryManager;
+
+    constructor(memoryManager: MemoryManager) {
+        this.memoryManager = memoryManager;
+    }
+
+    async getRelationship(agentId: UUID, userId: UUID): Promise<RelationshipData | null> {
+        const memory = await this.memoryManager.getMemory({
+            agentId,
+            userId,
+            type: "relationship",
+        });
+
+        if (!memory) {
+            return null;
+        }
+
+        return this.memoryToRelationship(memory);
+    }
+
+    async updateRelationship(agentId: UUID, userId: UUID, score: number): Promise<void> {
+        const relationship = await this.getRelationship(agentId, userId);
+        const newScore = relationship ? calculateScore(relationship.score, score) : score;
+
+        await this.memoryManager.createMemory({
+            id: stringToUuid(`${agentId}-${userId}-relationship`),
+            agentId,
+            userId,
+            type: "relationship",
+            content: {
+                text: "",
+                score: newScore,
+            },
+            lastUpdated: new Date(),
+        });
+    }
+
+    private memoryToRelationship(memory: Memory): RelationshipData {
+        return {
+            id: memory.id,
+            agentId: memory.agentId,
+            userId: memory.userId,
+            score: memory.content.score,
+            lastUpdated: memory.lastUpdated,
+        };
+    }
 }

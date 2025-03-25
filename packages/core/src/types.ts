@@ -378,6 +378,9 @@ export interface Memory {
     /** Associated agent ID */
     agentId: UUID;
 
+    /** Room ID */
+    roomId: UUID;
+
     /** Optional creation timestamp */
     createdAt?: number;
 
@@ -387,14 +390,15 @@ export interface Memory {
     /** Optional embedding vector */
     embedding?: number[];
 
-    /** Associated room ID */
-    roomId: UUID;
-
     /** Whether memory is unique */
     unique?: boolean;
 
     /** Embedding similarity score */
     similarity?: number;
+
+    type: string;
+
+    lastUpdated: Date;
 }
 
 /**
@@ -406,6 +410,17 @@ export interface MessageExample {
 
     /** Message content */
     content: Content;
+}
+
+/**
+ * Represents a message
+ */
+export interface Message {
+    id: UUID;
+    content: string;
+    role: string;
+    timestamp: Date;
+    metadata?: Record<string, unknown>;
 }
 
 /**
@@ -1285,94 +1300,77 @@ export abstract class Service {
 }
 
 export interface IAgentRuntime {
-    // Properties
     agentId: UUID;
-    serverUrl: string;
-    databaseAdapter: IDatabaseAdapter;
-    token: string | null;
-    modelProvider: ModelProviderName;
-    imageModelProvider: ModelProviderName;
-    imageVisionModelProvider: ModelProviderName;
-    character: Character;
-    providers: Provider[];
-    actions: Action[];
-    evaluators: Evaluator[];
-    plugins: Plugin[];
-
-    fetch?: typeof fetch | null;
-
-    messageManager: IMemoryManager;
-    descriptionManager: IMemoryManager;
-    documentsManager: IMemoryManager;
-    knowledgeManager: IMemoryManager;
-    ragKnowledgeManager: IRAGKnowledgeManager;
-    loreManager: IMemoryManager;
-
-    cacheManager: ICacheManager;
-
-    services: Map<ServiceType, Service>;
-    clients: ClientInstance[];
-
-    // verifiableInferenceAdapter?: IVerifiableInferenceAdapter | null;
-
-    initialize(): Promise<void>;
-
-    registerMemoryManager(manager: IMemoryManager): void;
-
-    getMemoryManager(name: string): IMemoryManager | null;
-
-    getService<T extends Service>(service: ServiceType): T | null;
-
-    registerService(service: Service): void;
-
+    databaseAdapter: {
+        getMemories(opts: {
+            roomId: UUID;
+            count?: number;
+            unique?: boolean;
+            start?: number;
+            end?: number;
+            tableName: string;
+            agentId: UUID;
+        }): Promise<Memory[]>;
+        searchMemoriesByEmbedding(
+            embedding: number[],
+            opts: {
+                match_threshold?: number;
+                count?: number;
+                roomId: UUID;
+                unique?: boolean;
+                tableName: string;
+                agentId: UUID;
+            }
+        ): Promise<Memory[]>;
+        createMemory(memory: Memory & { tableName: string }, unique?: boolean): Promise<void>;
+        getMemoriesByRoomIds(params: {
+            roomIds: UUID[];
+            limit?: number;
+            tableName: string;
+            agentId: UUID;
+        }): Promise<Memory[]>;
+        getMemoryById(id: UUID): Promise<Memory>;
+        getParticipantsForRoom(roomId: UUID): Promise<string[]>;
+        getAccountById(id: UUID): Promise<{ id: UUID; name: string }>;
+        getCachedEmbeddings(query: { roomId: UUID }): Promise<Memory[]>;
+        searchMemories(query: { roomId: UUID }): Promise<Memory[]>;
+        removeMemory(id: UUID): Promise<void>;
+        removeAllMemories(roomId: UUID): Promise<void>;
+        countMemories(roomId: UUID): Promise<number>;
+    };
     getSetting(key: string): string | null;
+    processActions(message: Memory, responses: Memory[]): Promise<void>;
+}
 
-    // Methods
-    getConversationLength(): number;
-
-    processActions(
-        message: Memory,
-        responses: Memory[],
-        state?: State,
-        callback?: HandlerCallback,
-    ): Promise<void>;
-
-    evaluate(
-        message: Memory,
-        state?: State,
-        didRespond?: boolean,
-        callback?: HandlerCallback,
-    ): Promise<string[] | null>;
-
-    ensureParticipantExists(userId: UUID, roomId: UUID): Promise<void>;
-
-    ensureUserExists(
-        userId: UUID,
-        userName: string | null,
-        name: string | null,
-        source: string | null,
-    ): Promise<void>;
-
-    registerAction(action: Action): void;
-
-    ensureConnection(
-        userId: UUID,
-        roomId: UUID,
-        userName?: string,
-        userScreenName?: string,
-        source?: string,
-    ): Promise<void>;
-
-    ensureParticipantInRoom(userId: UUID, roomId: UUID): Promise<void>;
-
-    ensureRoomExists(roomId: UUID): Promise<void>;
-
-    composeState(
-        message: Memory,
-        additionalKeys?: { [key: string]: unknown },
-    ): Promise<State>;
-
-    updateRecentMessageState(state: State): Promise<State>;
+export interface IMemoryManager {
+    runtime: IAgentRuntime;
+    tableName: string;
+    addEmbeddingToMemory(memory: Memory): Promise<Memory>;
+    getMemories(opts: {
+        roomId: UUID;
+        count?: number;
+        unique?: boolean;
+        start?: number;
+        end?: number;
+    }): Promise<Memory[]>;
+    searchMemoriesByEmbedding(
+        embedding: number[],
+        opts: {
+            match_threshold?: number;
+            count?: number;
+            roomId: UUID;
+            unique?: boolean;
+        }
+    ): Promise<Memory[]>;
+    createMemory(memory: Memory, unique?: boolean): Promise<void>;
+    getMemoriesByRoomIds(params: { roomIds: UUID[]; limit?: number }): Promise<Memory[]>;
+    getMemoryById(id: UUID): Promise<Memory>;
+    getMemory(query: {
+        id?: UUID;
+        agentId?: UUID;
+        userId?: UUID;
+        type?: string;
+    }): Promise<Memory | null>;
 }
 
 export interface IImageDescriptionService extends Service {

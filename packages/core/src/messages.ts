@@ -1,18 +1,16 @@
 import type {
     IAgentRuntime,
-<<<<<<< HEAD
     Actor,
     Content,
-    Memory,
+    Message,
     UUID,
+    State,
+    Memory,
 } from "./types.ts";
-=======
-    type Actor,
-    type Content,
-    type Memory,
-    type UUID,
-} from "./types";
->>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
+import { z } from "zod";
+import { embed } from "./embedding.ts";
+import { MemoryManager } from "./memory.ts";
+import { getRelationshipScore } from "./scoring.ts";
 
 /**
  * Get details for a list of actors.
@@ -119,3 +117,35 @@ export const formatTimestamp = (messageDate: number) => {
         return `${days} day${days !== 1 ? "s" : ""} ago`;
     }
 };
+
+export async function processMessage(
+    message: Message,
+    memoryManager: MemoryManager,
+    agentId: UUID,
+    userId: UUID,
+    roomId: UUID
+): Promise<void> {
+    // Update relationship score based on message content
+    const score = getRelationshipScore(message.content);
+    
+    // Get existing relationship
+    const relationship = await memoryManager.getMemory({
+        agentId,
+        userId,
+        type: "relationship",
+    });
+
+    // Create or update relationship
+    await memoryManager.createMemory({
+        id: `${agentId}-${userId}-relationship`,
+        agentId,
+        userId,
+        roomId: roomId,
+        type: "relationship",
+        content: {
+            text: message.content,
+            score: relationship ? relationship.content.score : score,
+        },
+        lastUpdated: new Date(),
+    });
+}

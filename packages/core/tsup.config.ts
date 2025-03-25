@@ -5,30 +5,18 @@ export default defineConfig({
     outDir: "dist",
     sourcemap: true,
     clean: true,
-<<<<<<< HEAD
-    format: ["esm"], // Ensure you're targeting CommonJS
-    platform: "node",
-    target: "node18",
-    bundle: true,
-    splitting: true, // Add this for better code splitting
-    dts: true, // Generate declaration files
-=======
     format: ["esm"],
+    platform: "node",
+    target: "node20",
     bundle: true,
     splitting: false,
     dts: true,
->>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
     external: [
         "dotenv",
         "fs",
         "path",
         "http",
         "https",
-<<<<<<< HEAD
-        // Add other modules you want to externalize
-        "onnxruntime-node",
-        "sharp",
-=======
         "crypto",
         "events",
         "stream",
@@ -39,8 +27,9 @@ export default defineConfig({
         "zlib",
         "tty",
         "net",
-        "child_process"
->>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
+        "child_process",
+        "onnxruntime-node",
+        "sharp"
     ],
     esbuildOptions: (options) => {
         options.bundle = true;

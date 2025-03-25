@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import settings from "./settings.ts";
 import {
     type EmbeddingModelSettings,
@@ -8,10 +7,6 @@ import {
     type Models,
     type ModelSettings,
 } from "./types.ts";
-=======
-import settings from "./settings";
-import { Models, ModelProviderName, ModelClass } from "./types";
->>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
 
 export const models: Models = {
     [ModelProviderName.OPENAI]: {

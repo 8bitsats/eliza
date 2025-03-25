@@ -1,24 +1,6 @@
-<<<<<<< HEAD
 import { embed, getEmbeddingZeroVector } from "./embedding.ts";
 import elizaLogger from "./logger.ts";
-import type {
-    IAgentRuntime,
-    IMemoryManager,
-    Memory,
-    UUID,
-} from "./types.ts";
-=======
-import { embed } from "./embedding";
-import {
-    IAgentRuntime,
-    IMemoryManager,
-    type Memory,
-    type UUID,
-} from "./types";
->>>>>>> 3044b4d754ff7e77fa992254ba5c915612fb9425
-
-const defaultMatchThreshold = 0.1;
-const defaultMatchCount = 10;
+import type { IAgentRuntime, IMemoryManager, Memory, UUID } from "./types.ts";
 
 /**
  * Manage memories in the database.
@@ -27,22 +9,19 @@ export class MemoryManager implements IMemoryManager {
     /**
      * The AgentRuntime instance associated with this manager.
      */
-    runtime: IAgentRuntime;
+    public runtime: IAgentRuntime;
 
     /**
      * The name of the database table this manager operates on.
      */
-    tableName: string;
+    tableName = "memories";
 
     /**
      * Constructs a new MemoryManager instance.
-     * @param opts Options for the manager.
-     * @param opts.tableName The name of the table this manager will operate on.
-     * @param opts.runtime The AgentRuntime instance associated with this manager.
+     * @param runtime The AgentRuntime instance associated with this manager.
      */
-    constructor(opts: { tableName: string; runtime: IAgentRuntime }) {
-        this.runtime = opts.runtime;
-        this.tableName = opts.tableName;
+    constructor(runtime: IAgentRuntime) {
+        this.runtime = runtime;
     }
 
     /**
@@ -50,40 +29,27 @@ export class MemoryManager implements IMemoryManager {
      * @param memory The memory object to add an embedding to.
      * @returns A Promise resolving to the memory object, potentially updated with an embedding vector.
      */
-    /**
-     * Adds an embedding vector to a memory object if one doesn't already exist.
-     * The embedding is generated from the memory's text content using the runtime's
-     * embedding model. If the memory has no text content, an error is thrown.
-     *
-     * @param memory The memory object to add an embedding to
-     * @returns The memory object with an embedding vector added
-     * @throws Error if the memory content is empty
-     */
     async addEmbeddingToMemory(memory: Memory): Promise<Memory> {
-        // Return early if embedding already exists
-        if (memory.embedding) {
+        if (!memory.content || !memory.content.text) {
+            elizaLogger.warn("No text content to embed");
             return memory;
-        }
-
-        const memoryText = memory.content.text;
-
-        // Validate memory has text content
-        if (!memoryText) {
-            throw new Error(
-                "Cannot generate embedding: Memory content is empty"
-            );
         }
 
         try {
             // Generate embedding from text content
-            memory.embedding = await embed(this.runtime, memoryText);
+            const embedding = await embed(this.runtime, memory.content.text);
+            return {
+                ...memory,
+                embedding,
+            };
         } catch (error) {
             elizaLogger.error("Failed to generate embedding:", error);
             // Fallback to zero vector if embedding fails
-            memory.embedding = getEmbeddingZeroVector().slice();
+            return {
+                ...memory,
+                embedding: getEmbeddingZeroVector(),
+            };
         }
-
-        return memory;
     }
 
     /**
@@ -96,8 +62,8 @@ export class MemoryManager implements IMemoryManager {
      */
     async getMemories({
         roomId,
-        count = 10,
-        unique = true,
+        count = 100,
+        unique = false,
         start,
         end,
     }: {
@@ -111,27 +77,35 @@ export class MemoryManager implements IMemoryManager {
             roomId,
             count,
             unique,
-            tableName: this.tableName,
-            agentId: this.runtime.agentId,
             start,
             end,
+            tableName: this.tableName,
+            agentId: this.runtime.agentId,
         });
     }
 
+    /**
+     * Retrieves cached embeddings from the database.
+     * @param content The content to retrieve cached embeddings for.
+     * @returns A Promise resolving to an array of cached embeddings.
+     */
     async getCachedEmbeddings(content: string): Promise<
         {
             embedding: number[];
             levenshtein_score: number;
         }[]
     > {
-        return await this.runtime.databaseAdapter.getCachedEmbeddings({
-            query_table_name: this.tableName,
-            query_threshold: 2,
-            query_input: content,
-            query_field_name: "content",
-            query_field_sub_name: "text",
-            query_match_count: 10,
+        const memories = await this.runtime.databaseAdapter.getCachedEmbeddings({
+            roomId: this.runtime.agentId,
         });
+
+        // Filter and transform memories to match expected return type
+        return memories
+            .filter(memory => memory.embedding)
+            .map(memory => ({
+                embedding: memory.embedding!,
+                levenshtein_score: 0, // Default score since we don't have Levenshtein distance
+            }));
     }
 
     /**
@@ -154,8 +128,8 @@ export class MemoryManager implements IMemoryManager {
         }
     ): Promise<Memory[]> {
         const {
-            match_threshold = defaultMatchThreshold,
-            count = defaultMatchCount,
+            match_threshold = 0.1,
+            count = 10,
             roomId,
             unique,
         } = opts;
@@ -212,6 +186,31 @@ export class MemoryManager implements IMemoryManager {
         const result = await this.runtime.databaseAdapter.getMemoryById(id);
         if (result && result.agentId !== this.runtime.agentId) return null;
         return result;
+    }
+
+    async getMemory(query: {
+        id?: UUID;
+        agentId?: UUID;
+        userId?: UUID;
+        type?: string;
+    }): Promise<Memory | null> {
+        const memories = await this.getMemories({
+            roomId: query.agentId || this.runtime.agentId,
+            count: 100,
+            unique: true,
+        });
+
+        for (const memory of memories) {
+            if (
+                (!query.id || memory.id === query.id) &&
+                (!query.agentId || memory.agentId === query.agentId) &&
+                (!query.userId || memory.userId === query.userId) &&
+                (!query.type || memory.type === query.type)
+            ) {
+                return memory;
+            }
+        }
+        return null;
     }
 
     /**
