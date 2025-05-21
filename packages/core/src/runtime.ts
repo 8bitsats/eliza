@@ -1,1821 +1,2751 @@
-import { readFile } from "fs/promises";
-import { join } from "path";
-import { names, uniqueNamesGenerator } from "unique-names-generator";
-import { v4 as uuidv4 } from "uuid";
+import { type Context, type Span, SpanStatusCode, context, trace } from '@opentelemetry/api';
+import { v4 as uuidv4 } from 'uuid';
+import { createUniqueUuid } from './entities';
+import { decryptSecret, getSalt, safeReplacer } from './index';
+import { InstrumentationService } from './instrumentation/service';
+import logger from './logger';
+import { splitChunks } from './utils';
 import {
-    composeActionExamples,
-    formatActionNames,
-    formatActions,
-} from "./actions.ts";
-import { addHeader, composeContext } from "./context.ts";
-import {
-    evaluationTemplate,
-    formatEvaluatorExamples,
-    formatEvaluatorNames,
-    formatEvaluators,
-} from "./evaluators.ts";
-import { generateText } from "./generation.ts";
-import { formatGoalsAsString, getGoals } from "./goals.ts";
-import { elizaLogger } from "./index.ts";
-import knowledge from "./knowledge.ts";
-import { MemoryManager } from "./memory.ts";
-import { formatActors, formatMessages, getActorDetails } from "./messages.ts";
-import { parseJsonArrayFromText } from "./parsing.ts";
-import { formatPosts } from "./posts.ts";
-import { getProviders } from "./providers.ts";
-import { RAGKnowledgeManager } from "./ragknowledge.ts";
-import settings from "./settings.ts";
-import {
-    type Character,
-    type Goal,
-    type HandlerCallback,
-    type IAgentRuntime,
-    type ICacheManager,
-    type IDatabaseAdapter,
-    type IMemoryManager,
-    type IRAGKnowledgeManager,
-    // type IVerifiableInferenceAdapter,
-    type KnowledgeItem,
-    // RAGKnowledgeItem,
-    //Media,
-    ModelClass,
-    ModelProviderName,
-    type Plugin,
-    type Provider,
-    type Adapter,
-    type Service,
-    type ServiceType,
-    type State,
-    type UUID,
-    type Action,
-    type Actor,
-    type Evaluator,
-    type Memory,
-    type DirectoryItem,
-    type ClientInstance,
-} from "./types.ts";
-import { stringToUuid } from "./uuid.ts";
-import { glob } from "glob";
-import { existsSync } from "fs";
+  ChannelType,
+  MemoryType,
+  ModelType,
+  type Content, // Add Content import
+} from './types';
+
+import { BM25 } from './search';
+import type {
+  Action,
+  Agent,
+  Character,
+  Component,
+  Entity,
+  Evaluator,
+  HandlerCallback,
+  IAgentRuntime,
+  IDatabaseAdapter,
+  KnowledgeItem,
+  Log,
+  Memory,
+  MemoryMetadata,
+  ModelParamsMap,
+  ModelResultMap,
+  ModelTypeName,
+  Participant,
+  Plugin,
+  Provider,
+  Relationship,
+  Room,
+  Route,
+  RuntimeSettings,
+  Service,
+  ServiceTypeName,
+  State,
+  Task,
+  TaskWorker,
+  UUID,
+  World,
+  TargetInfo,
+  SendHandlerFunction,
+  ModelHandler,
+} from './types';
+import { EventType, type MessagePayload } from './types';
+import { stringToUuid } from './utils';
+import { PGlite } from '@electric-sql/pglite';
+import { Pool } from 'pg';
+
 /**
- * Represents the runtime environment for an agent, handling message processing,
- * action registration, and interaction with external services like OpenAI and Supabase.
+ * Represents a collection of settings grouped by namespace.
+ *
+ * @typedef {Object} NamespacedSettings
+ * @property {RuntimeSettings} namespace - The namespace key and corresponding RuntimeSettings value.
  */
 
-function isDirectoryItem(item: any): item is DirectoryItem {
-    return (
-        typeof item === "object" &&
-        item !== null &&
-        "directory" in item &&
-        typeof item.directory === "string"
-    );
+/**
+ * Initialize an empty object for storing environment settings.
+ */
+const environmentSettings: RuntimeSettings = {};
+
+// Semaphore implementation for controlling concurrent operations
+export class Semaphore {
+  private permits: number;
+  private waiting: Array<() => void> = [];
+
+  constructor(count: number) {
+    this.permits = count;
+  }
+
+  async acquire(): Promise<void> {
+    if (this.permits > 0) {
+      this.permits -= 1;
+      return Promise.resolve();
+    }
+
+    return new Promise<void>((resolve) => {
+      this.waiting.push(resolve);
+    });
+  }
+
+  release(): void {
+    this.permits += 1;
+    const nextResolve = this.waiting.shift();
+    if (nextResolve && this.permits > 0) {
+      this.permits -= 1;
+      nextResolve();
+    }
+  }
 }
 
+/**
+ * AgentRuntime provides the core runtime environment and lifecycle management for agents.
+ *
+ * Implements the IAgentRuntime interface, managing agent state, actions, plugins, providers, and database interaction.
+ *
+ * implements IAgentRuntime
+ */
 export class AgentRuntime implements IAgentRuntime {
-    /**
-     * Default count for recent messages to be kept in memory.
-     * @private
-     */
-    readonly #conversationLength = 32 as number;
-    /**
-     * The ID of the agent
-     */
-    agentId: UUID;
-    /**
-     * The base URL of the server where the agent's requests are processed.
-     */
-    serverUrl = "http://localhost:7998";
+  readonly #conversationLength = 32 as number;
+  readonly agentId: UUID;
+  readonly character: Character;
+  public adapter!: IDatabaseAdapter;
+  readonly actions: Action[] = [];
+  readonly evaluators: Evaluator[] = [];
+  readonly providers: Provider[] = [];
+  readonly plugins: Plugin[] = [];
+  private isInitialized = false;
+  events: Map<string, ((params: any) => Promise<void>)[]> = new Map();
+  stateCache = new Map<
+    UUID,
+    {
+      values: { [key: string]: any };
+      data: { [key: string]: any };
+      text: string;
+    }
+  >();
 
-    /**
-     * The database adapter used for interacting with the database.
-     */
-    databaseAdapter: IDatabaseAdapter;
+  readonly fetch = fetch;
+  services = new Map<ServiceTypeName, Service>();
+  models = new Map<string, ModelHandler[]>();
+  routes: Route[] = [];
 
-    /**
-     * Authentication token used for securing requests.
-     */
-    token: string | null;
+  private taskWorkers = new Map<string, TaskWorker>();
+  private sendHandlers = new Map<string, SendHandlerFunction>(); // Add map for send handlers
 
-    /**
-     * Custom actions that the agent can perform.
-     */
-    actions: Action[] = [];
+  // Event emitter methods
+  private eventHandlers: Map<string, ((data: any) => void)[]> = new Map();
 
-    /**
-     * Evaluators used to assess and guide the agent's responses.
-     */
-    evaluators: Evaluator[] = [];
+  private runtimeLogger;
+  private knowledgeProcessingSemaphore = new Semaphore(10);
+  private settings: RuntimeSettings;
 
-    /**
-     * Context providers used to provide context for message generation.
-     */
-    providers: Provider[] = [];
+  private servicesInitQueue = new Set<typeof Service>();
 
-    /**
-     * Database adapters used to interact with the database.
-     */
-    adapters: Adapter[] = [];
+  // Add instrumentation properties
+  instrumentationService: InstrumentationService;
+  tracer: any;
 
-    plugins: Plugin[] = [];
+  constructor(opts: {
+    conversationLength?: number;
+    agentId?: UUID;
+    character?: Character;
+    plugins?: Plugin[];
+    fetch?: typeof fetch;
+    adapter?: IDatabaseAdapter;
+    settings?: RuntimeSettings;
+    events?: { [key: string]: ((params: any) => void)[] };
+  }) {
+    // use the character id if it exists, otherwise use the agentId if it is passed in, otherwise use the character name
+    this.agentId =
+      opts.character?.id ??
+      opts?.agentId ??
+      stringToUuid(opts.character?.name ?? uuidv4() + opts.character?.username);
+    this.character = opts.character;
 
-    /**
-     * The model to use for generateText.
-     */
-    modelProvider: ModelProviderName;
+    // Get log level from environment or default to info
+    const logLevel = process.env.LOG_LEVEL || 'info';
 
-    /**
-     * The model to use for generateImage.
-     */
-    imageModelProvider: ModelProviderName;
+    // Create the logger with appropriate level - only show debug logs when explicitly configured
+    this.runtimeLogger = logger.child({
+      agentName: this.character?.name,
+      agentId: this.agentId,
+      level: logLevel === 'debug' ? 'debug' : 'error', // Show only errors unless debug mode is enabled
+    });
 
-    /**
-     * The model to use for describing images.
-     */
-    imageVisionModelProvider: ModelProviderName;
+    this.runtimeLogger.debug(`[AgentRuntime] Process working directory: ${process.cwd()}`);
 
-    /**
-     * Fetch function to use
-     * Some environments may not have access to the global fetch function and need a custom fetch override.
-     */
-    fetch = fetch;
+    this.#conversationLength = opts.conversationLength ?? this.#conversationLength;
 
-    /**
-     * The character to use for the agent
-     */
-    character: Character;
+    if (opts.adapter) {
+      this.registerDatabaseAdapter(opts.adapter);
+    }
 
-    /**
-     * Store messages that are sent and received by the agent.
-     */
-    messageManager: IMemoryManager;
+    this.fetch = (opts.fetch as typeof fetch) ?? this.fetch;
 
-    /**
-     * Store and recall descriptions of users based on conversations.
-     */
-    descriptionManager: IMemoryManager;
+    this.settings = opts.settings ?? environmentSettings;
 
-    /**
-     * Manage the creation and recall of static information (documents, historical game lore, etc)
-     */
-    loreManager: IMemoryManager;
+    // Register plugins from options or empty array
+    const plugins = opts?.plugins ?? [];
 
-    /**
-     * Hold large documents that can be referenced
-     */
-    documentsManager: IMemoryManager;
+    // Store plugins in the array but don't initialize them yet
+    this.plugins = plugins;
 
-    /**
-     * Searchable document fragments
-     */
-    knowledgeManager: IMemoryManager;
+    if (process.env.INSTRUMENTATION_ENABLED === 'true') {
+      // Initialize instrumentation service with appropriate configuration
+      try {
+        // Create instrumentation service with agent info
+        this.instrumentationService = new InstrumentationService({
+          serviceName: `agent-${this.character?.name || 'unknown'}-${this.agentId}`,
+          enabled: true,
+        });
 
-    ragKnowledgeManager: IRAGKnowledgeManager;
+        // Get a tracer for the runtime
+        this.tracer = this.instrumentationService.getTracer('agent-runtime');
 
-    private readonly knowledgeRoot: string;
+        this.runtimeLogger.debug(`Instrumentation service initialized for agent ${this.agentId}`);
+      } catch (error) {
+        // If instrumentation fails, provide a fallback implementation
+        this.runtimeLogger.warn(`Failed to initialize instrumentation: ${error.message}`);
+        // Create a no-op implementation
+        this.instrumentationService = {
+          getTracer: () => null,
+          start: async () => {},
+          stop: async () => {},
+          isStarted: () => false,
+          isEnabled: () => false,
+          name: 'INSTRUMENTATION',
+          capabilityDescription: 'Disabled instrumentation service (fallback)',
+          instrumentationConfig: { enabled: false },
+          getMeter: () => null,
+          flush: async () => {},
+        } as any;
+        this.tracer = null;
+      }
+    }
 
-    services: Map<ServiceType, Service> = new Map();
-    memoryManagers: Map<string, IMemoryManager> = new Map();
-    cacheManager: ICacheManager;
-    clients: ClientInstance[] = [];
+    this.runtimeLogger.debug(`Success: Agent ID: ${this.agentId}`);
+  }
 
-    // verifiableInferenceAdapter?: IVerifiableInferenceAdapter;
+  /**
+   * Starts a span for the given operation and executes the provided function with the span.
+   * @param name The name of the span to create
+   * @param fn The function to execute with the span
+   * @param parentContext Optional parent context for the span
+   * @returns The result of the provided function
+   */
+  async startSpan<T>(
+    name: string,
+    fn: (span: Span) => Promise<T>,
+    parentContext?: Context
+  ): Promise<T> {
+    // If instrumentation is disabled, create a mock span with no-op methods
+    if (!this.instrumentationService?.isEnabled?.() || !this.tracer) {
+      const mockSpan = {
+        setStatus: () => {},
+        setAttribute: () => {},
+        setAttributes: () => {},
+        recordException: () => {},
+        addEvent: () => {},
+        end: () => {},
+        isRecording: () => false,
+        spanContext: () => ({ traceId: '', spanId: '', traceFlags: 0 }),
+        updateName: () => {},
+        addLink: () => {},
+        addLinks: () => {},
+      } as unknown as Span;
+      return fn(mockSpan);
+    }
 
-    registerMemoryManager(manager: IMemoryManager): void {
-        if (!manager.tableName) {
-            throw new Error("Memory manager must have a tableName");
-        }
+    // Otherwise, use the real tracer to create a span
+    return this.tracer.startActiveSpan(name, parentContext, undefined, async (span: Span) => {
+      try {
+        // Set default attributes for all spans
+        span.setAttributes({
+          'agent.id': this.agentId,
+          'agent.name': this.character?.name || 'unknown',
+        });
 
-        if (this.memoryManagers.has(manager.tableName)) {
-            elizaLogger.warn(
-                `Memory manager ${manager.tableName} is already registered. Skipping registration.`,
+        // Call the function with the span
+        const result = await fn(span);
+
+        // End the span with successful status
+        span.setStatus({ code: SpanStatusCode.OK });
+        span.end();
+
+        return result;
+      } catch (error) {
+        // If an error occurs, record it and set error status
+        span.recordException(error as Error);
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: (error as Error).message,
+        });
+        span.end();
+
+        // Rethrow the error
+        throw error;
+      }
+    });
+  }
+
+  /**
+   * Ends a span with the provided name in the given context
+   * @param ctx Context containing the span to end
+   * @param name Name to record in the end event
+   */
+  endSpan(ctx: Context | undefined, name: string): void {
+    // This is a no-op method for compatibility
+    // Actual span ending is handled in startSpan
+  }
+
+  /**
+   * Start an active span that can be used as a parent for other spans
+   * @param name Name of the span
+   * @param options Span options
+   */
+  startActiveSpan(name: string, options: any = {}): Span {
+    if (!this.instrumentationService?.isEnabled?.() || !this.tracer) {
+      // Return mock span if instrumentation is disabled
+      return {
+        setStatus: () => {},
+        setAttribute: () => {},
+        setAttributes: () => {},
+        recordException: () => {},
+        addEvent: () => {},
+        end: () => {},
+        isRecording: () => false,
+        spanContext: () => ({ traceId: '', spanId: '', traceFlags: 0 }),
+        updateName: () => {},
+        addLink: () => {},
+        addLinks: () => {},
+      } as unknown as Span;
+    }
+
+    // Create real span if instrumentation is enabled
+    return this.tracer.startSpan(name, options);
+  }
+
+  /**
+   * Registers a plugin with the runtime and initializes its components
+   * @param plugin The plugin to register
+   */
+  async registerPlugin(plugin: Plugin): Promise<void> {
+    return this.startSpan('AgentRuntime.registerPlugin', async (span) => {
+      span.setAttributes({
+        'plugin.name': plugin?.name || 'unknown',
+        'agent.id': this.agentId,
+      });
+
+      if (!plugin) {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: 'Plugin is undefined' });
+        this.runtimeLogger.error('*** registerPlugin plugin is undefined');
+        throw new Error('*** registerPlugin plugin is undefined');
+      }
+
+      // Add to plugins array if not already present - but only if it was not passed there initially
+      // (otherwise we can't add to readonly array)
+      if (!this.plugins.some((p) => p.name === plugin.name)) {
+        // Push to plugins array - this works because we're modifying the array, not reassigning it
+        this.plugins.push(plugin);
+        span.addEvent('plugin_added_to_array');
+        this.runtimeLogger.debug(`Success: Plugin ${plugin.name} registered successfully`);
+      }
+
+      // Initialize the plugin if it has an init function
+      if (plugin.init) {
+        try {
+          span.addEvent('initializing_plugin');
+          await plugin.init(plugin.config || {}, this);
+          span.addEvent('plugin_initialized');
+          this.runtimeLogger.debug(`Success: Plugin ${plugin.name} initialized successfully`);
+        } catch (error) {
+          // Check if the error is related to missing API keys
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          span.setAttributes({
+            'error.message': errorMessage,
+            'error.type': error instanceof Error ? error.constructor.name : 'Unknown',
+          });
+
+          if (
+            errorMessage.includes('API key') ||
+            errorMessage.includes('environment variables') ||
+            errorMessage.includes('Invalid plugin configuration')
+          ) {
+            // Instead of throwing an error, log a friendly message
+            console.warn(`Plugin ${plugin.name} requires configuration. ${errorMessage}`);
+            console.warn(
+              'Please check your environment variables and ensure all required API keys are set.'
             );
-            return;
-        }
-
-        this.memoryManagers.set(manager.tableName, manager);
-    }
-
-    getMemoryManager(tableName: string): IMemoryManager | null {
-        return this.memoryManagers.get(tableName) || null;
-    }
-
-    getService<T extends Service>(service: ServiceType): T | null {
-        const serviceInstance = this.services.get(service);
-        if (!serviceInstance) {
-            elizaLogger.error(`Service ${service} not found`);
-            return null;
-        }
-        return serviceInstance as T;
-    }
-
-    async registerService(service: Service): Promise<void> {
-        const serviceType = service.serviceType;
-        elizaLogger.log(`${this.character.name}(${this.agentId}) - Registering service:`, serviceType);
-
-        if (this.services.has(serviceType)) {
-            elizaLogger.warn(
-                `${this.character.name}(${this.agentId}) - Service ${serviceType} is already registered. Skipping registration.`
-            );
-            return;
-        }
-
-        // Add the service to the services map
-        this.services.set(serviceType, service);
-        elizaLogger.success(`${this.character.name}(${this.agentId}) - Service ${serviceType} registered successfully`);
-    }
-
-    /**
-     * Creates an instance of AgentRuntime.
-     * @param opts - The options for configuring the AgentRuntime.
-     * @param opts.conversationLength - The number of messages to hold in the recent message cache.
-     * @param opts.token - The JWT token, can be a JWT token if outside worker, or an OpenAI token if inside worker.
-     * @param opts.serverUrl - The URL of the worker.
-     * @param opts.actions - Optional custom actions.
-     * @param opts.evaluators - Optional custom evaluators.
-     * @param opts.services - Optional custom services.
-     * @param opts.memoryManagers - Optional custom memory managers.
-     * @param opts.providers - Optional context providers.
-     * @param opts.model - The model to use for generateText.
-     * @param opts.embeddingModel - The model to use for embedding.
-     * @param opts.agentId - Optional ID of the agent.
-     * @param opts.databaseAdapter - The database adapter used for interacting with the database.
-     * @param opts.fetch - Custom fetch function to use for making requests.
-     */
-
-    constructor(opts: {
-        conversationLength?: number; // number of messages to hold in the recent message cache
-        agentId?: UUID; // ID of the agent
-        character?: Character; // The character to use for the agent
-        token: string; // JWT token, can be a JWT token if outside worker, or an OpenAI token if inside worker
-        serverUrl?: string; // The URL of the worker
-        actions?: Action[]; // Optional custom actions
-        evaluators?: Evaluator[]; // Optional custom evaluators
-        plugins?: Plugin[];
-        providers?: Provider[];
-        modelProvider: ModelProviderName;
-
-        services?: Service[]; // Map of service name to service instance
-        managers?: IMemoryManager[]; // Map of table name to memory manager
-        databaseAdapter?: IDatabaseAdapter; // The database adapter used for interacting with the database
-        fetch?: typeof fetch | unknown;
-        speechModelPath?: string;
-        cacheManager?: ICacheManager;
-        logging?: boolean;
-        // verifiableInferenceAdapter?: IVerifiableInferenceAdapter;
-    }) {
-        // use the character id if it exists, otherwise use the agentId if it is passed in, otherwise use the character name
-        this.agentId =
-            opts.character?.id ??
-            opts?.agentId ??
-            stringToUuid(opts.character?.name ?? uuidv4());
-        this.character = opts.character;
-
-        if(!this.character) {
-            throw new Error("Character input is required");
-        }
-
-        elizaLogger.info(`${this.character.name}(${this.agentId}) - Initializing AgentRuntime with options:`, {
-            character: opts.character?.name,
-            modelProvider: opts.modelProvider,
-            characterModelProvider: opts.character?.modelProvider,
-        });
-
-        elizaLogger.debug(
-            `[AgentRuntime] Process working directory: ${process.cwd()}`,
-        );
-
-        // Define the root path once
-        this.knowledgeRoot = join(
-            process.cwd(),
-            "..",
-            "characters",
-            "knowledge",
-        );
-
-        elizaLogger.debug(
-            `[AgentRuntime] Process knowledgeRoot: ${this.knowledgeRoot}`,
-        );
-
-        this.#conversationLength =
-            opts.conversationLength ?? this.#conversationLength;
-
-        this.databaseAdapter = opts.databaseAdapter;
-
-        elizaLogger.success(`Agent ID: ${this.agentId}`);
-
-        this.fetch = (opts.fetch as typeof fetch) ?? this.fetch;
-
-        this.cacheManager = opts.cacheManager;
-
-        this.messageManager = new MemoryManager({
-            runtime: this,
-            tableName: "messages",
-        });
-
-        this.descriptionManager = new MemoryManager({
-            runtime: this,
-            tableName: "descriptions",
-        });
-
-        this.loreManager = new MemoryManager({
-            runtime: this,
-            tableName: "lore",
-        });
-
-        this.documentsManager = new MemoryManager({
-            runtime: this,
-            tableName: "documents",
-        });
-
-        this.knowledgeManager = new MemoryManager({
-            runtime: this,
-            tableName: "fragments",
-        });
-
-        this.ragKnowledgeManager = new RAGKnowledgeManager({
-            runtime: this,
-            tableName: "knowledge",
-            knowledgeRoot: this.knowledgeRoot,
-        });
-
-        (opts.managers ?? []).forEach((manager: IMemoryManager) => {
-            this.registerMemoryManager(manager);
-        });
-
-        (opts.services ?? []).forEach((service: Service) => {
-            this.registerService(service);
-        });
-
-        this.serverUrl = opts.serverUrl ?? this.serverUrl;
-
-        elizaLogger.info(`${this.character.name}(${this.agentId}) - Setting Model Provider:`, {
-            characterModelProvider: this.character.modelProvider,
-            optsModelProvider: opts.modelProvider,
-            currentModelProvider: this.modelProvider,
-            finalSelection:
-                this.character.modelProvider ??
-                opts.modelProvider ??
-                this.modelProvider,
-        });
-
-        this.modelProvider =
-            this.character.modelProvider ??
-            opts.modelProvider ??
-            this.modelProvider;
-
-        this.imageModelProvider =
-            this.character.imageModelProvider ?? this.modelProvider;
-
-        this.imageVisionModelProvider =
-            this.character.imageVisionModelProvider ?? this.modelProvider;
-
-        elizaLogger.info(
-          `${this.character.name}(${this.agentId}) - Selected model provider:`,
-          this.modelProvider
-        );
-
-        elizaLogger.info(
-          `${this.character.name}(${this.agentId}) - Selected image model provider:`,
-          this.imageModelProvider
-        );
-
-        elizaLogger.info(
-            `${this.character.name}(${this.agentId}) - Selected image vision model provider:`,
-            this.imageVisionModelProvider
-        );
-
-        // Validate model provider
-        if (!Object.values(ModelProviderName).includes(this.modelProvider)) {
-            elizaLogger.error("Invalid model provider:", this.modelProvider);
-            elizaLogger.error(
-                "Available providers:",
-                Object.values(ModelProviderName),
-            );
-            throw new Error(`Invalid model provider: ${this.modelProvider}`);
-        }
-
-        if (!this.serverUrl) {
-            elizaLogger.warn("No serverUrl provided, defaulting to localhost");
-        }
-
-        this.token = opts.token;
-
-        this.plugins = [
-            ...(opts.character?.plugins ?? []),
-            ...(opts.plugins ?? []),
-        ];
-
-        this.plugins.forEach((plugin) => {
-            plugin.actions?.forEach((action) => {
-                this.registerAction(action);
-            });
-
-            plugin.evaluators?.forEach((evaluator) => {
-                this.registerEvaluator(evaluator);
-            });
-
-            plugin.services?.forEach((service) => {
-                this.registerService(service);
-            });
-
-            plugin.providers?.forEach((provider) => {
-                this.registerContextProvider(provider);
-            });
-
-            plugin.adapters?.forEach((adapter) => {
-                this.registerAdapter(adapter);
-            });
-        });
-
-        (opts.actions ?? []).forEach((action) => {
-            this.registerAction(action);
-        });
-
-        (opts.providers ?? []).forEach((provider) => {
-            this.registerContextProvider(provider);
-        });
-
-        (opts.evaluators ?? []).forEach((evaluator: Evaluator) => {
-            this.registerEvaluator(evaluator);
-        });
-
-        // this.verifiableInferenceAdapter = opts.verifiableInferenceAdapter;
-    }
-
-    private async initializeDatabase() {
-        // By convention, we create a user and room using the agent id.
-        // Memories related to it are considered global context for the agent.
-        this.ensureRoomExists(this.agentId);
-        this.ensureUserExists(
-            this.agentId,
-            this.character.username || this.character.name,
-            this.character.name,
-        ).then(() => {
-            // postgres needs the user to exist before you can add a participant
-            this.ensureParticipantExists(this.agentId, this.agentId);
-        });
-    }
-
-    async initialize() {
-        this.initializeDatabase();
-
-        for (const [serviceType, service] of this.services.entries()) {
-            try {
-                await service.initialize(this);
-                this.services.set(serviceType, service);
-                elizaLogger.success(
-                    `${this.character.name}(${this.agentId}) - Service ${serviceType} initialized successfully`
-                );
-            } catch (error) {
-                elizaLogger.error(
-                    `${this.character.name}(${this.agentId}) - Failed to initialize service ${serviceType}:`,
-                    error
-                );
-                throw error;
-            }
-        }
-
-        // should already be initialized
-        /*
-        for (const plugin of this.plugins) {
-            if (plugin.services)
-                await Promise.all(
-                    plugin.services?.map((service) => service.initialize(this)),
-                );
-        }
-        */
-
-        if (
-            this.character &&
-            this.character.knowledge &&
-            this.character.knowledge.length > 0
-        ) {
-            elizaLogger.info(
-                `[RAG Check] RAG Knowledge enabled: ${this.character.settings.ragKnowledge ? true : false}`,
-            );
-            elizaLogger.debug(
-                `[RAG Check] Knowledge items:`,
-                this.character.knowledge,
-            );
-
-            if (this.character.settings.ragKnowledge) {
-                // Type guards with logging for each knowledge type
-                const [directoryKnowledge, pathKnowledge, stringKnowledge] =
-                    this.character.knowledge.reduce(
-                        (acc, item) => {
-                            if (typeof item === "object") {
-                                if (isDirectoryItem(item)) {
-                                    elizaLogger.debug(
-                                        `[RAG Filter] Found directory item: ${JSON.stringify(item)}`,
-                                    );
-                                    acc[0].push(item);
-                                } else if ("path" in item) {
-                                    elizaLogger.debug(
-                                        `[RAG Filter] Found path item: ${JSON.stringify(item)}`,
-                                    );
-                                    acc[1].push(item);
-                                }
-                            } else if (typeof item === "string") {
-                                elizaLogger.debug(
-                                    `[RAG Filter] Found string item: ${item.slice(0, 100)}...`,
-                                );
-                                acc[2].push(item);
-                            }
-                            return acc;
-                        },
-                        [[], [], []] as [
-                            Array<{ directory: string; shared?: boolean }>,
-                            Array<{ path: string; shared?: boolean }>,
-                            Array<string>,
-                        ],
-                    );
-
-                elizaLogger.info(
-                    `[RAG Summary] Found ${directoryKnowledge.length} directories, ${pathKnowledge.length} paths, and ${stringKnowledge.length} strings`,
-                );
-
-                // Process each type of knowledge
-                if (directoryKnowledge.length > 0) {
-                    elizaLogger.info(
-                        `[RAG Process] Processing directory knowledge sources:`,
-                    );
-                    for (const dir of directoryKnowledge) {
-                        elizaLogger.info(
-                            `  - Directory: ${dir.directory} (shared: ${!!dir.shared})`,
-                        );
-                        await this.processCharacterRAGDirectory(dir);
-                    }
-                }
-
-                if (pathKnowledge.length > 0) {
-                    elizaLogger.info(
-                        `[RAG Process] Processing individual file knowledge sources`,
-                    );
-                    await this.processCharacterRAGKnowledge(pathKnowledge);
-                }
-
-                if (stringKnowledge.length > 0) {
-                    elizaLogger.info(
-                        `[RAG Process] Processing direct string knowledge`,
-                    );
-                    await this.processCharacterRAGKnowledge(stringKnowledge);
-                }
-            } else {
-                // Non-RAG mode: only process string knowledge
-                const stringKnowledge = this.character.knowledge.filter(
-                    (item): item is string => typeof item === "string",
-                );
-                await this.processCharacterKnowledge(stringKnowledge);
-            }
-
-            // After all new knowledge is processed, clean up any deleted files
-            elizaLogger.info(
-                `[RAG Cleanup] Starting cleanup of deleted knowledge files`,
-            );
-            await this.ragKnowledgeManager.cleanupDeletedKnowledgeFiles();
-            elizaLogger.info(`[RAG Cleanup] Cleanup complete`);
-        }
-    }
-
-    async stop() {
-        elizaLogger.debug("runtime::stop - character", this.character.name);
-        // stop services, they don't have a stop function
-        // just initialize
-
-        // plugins
-        // have actions, providers, evaluators (no start/stop)
-        // services (just initialized), clients
-
-        // client have a start
-        for (const c of this.clients) {
-            elizaLogger.log(
-                "runtime::stop - requesting",
-                c,
-                "client stop for",
-                this.character.name,
-            );
-            c.stop(this);
-        }
-        // we don't need to unregister with directClient
-        // don't need to worry about knowledge
-    }
-
-    /**
-     * Processes character knowledge by creating document memories and fragment memories.
-     * This function takes an array of knowledge items, creates a document memory for each item if it doesn't exist,
-     * then chunks the content into fragments, embeds each fragment, and creates fragment memories.
-     * @param knowledge An array of knowledge items containing id, path, and content.
-     */
-    private async processCharacterKnowledge(items: string[]) {
-        const ids = items.map(i => stringToUuid(i));
-        const exists = await this.documentsManager.getMemoriesByIds(ids);
-        const toAdd = [];
-        for(const i in items) {
-          const exist = exists[i];
-          if (!exist) {
-            toAdd.push([items[i], ids[i]]);
+            console.warn('You can set these in your .env file.');
+            span.addEvent('plugin_configuration_warning');
+            // We don't throw here, allowing the application to continue
+            // with reduced functionality
+          } else {
+            // For other types of errors, rethrow
+            span.setStatus({ code: SpanStatusCode.ERROR, message: errorMessage });
+            throw error;
           }
         }
-        if (!toAdd.length) return;
-        elizaLogger.info('discovered ' + toAdd.length + ' new knowledge items')
-        const chunkSize = 512;
-        const ps = [];
-        for (const a of toAdd) {
-            const item = a[0];
-            const knowledgeId = a[1];
+      }
 
-            if (item.length > chunkSize) {
-              // these are just slower
-              elizaLogger.info(
-                  this.character.name,
-                  " knowledge item over 512 characters, splitting - ",
-                  item.slice(0, 100),
+      // Register plugin adapter
+      if (plugin.adapter) {
+        span.addEvent('registering_adapter');
+        this.runtimeLogger.debug(`Registering database adapter for plugin ${plugin.name}`);
+        this.registerDatabaseAdapter(plugin.adapter);
+      }
+
+      // Register plugin actions
+      if (plugin.actions) {
+        span.addEvent('registering_actions');
+        for (const action of plugin.actions) {
+          this.registerAction(action);
+        }
+      }
+
+      // Register plugin evaluators
+      if (plugin.evaluators) {
+        span.addEvent('registering_evaluators');
+        for (const evaluator of plugin.evaluators) {
+          this.registerEvaluator(evaluator);
+        }
+      }
+
+      // Register plugin providers
+      if (plugin.providers) {
+        span.addEvent('registering_providers');
+        for (const provider of plugin.providers) {
+          this.registerContextProvider(provider);
+        }
+      }
+
+      // Register plugin models
+      if (plugin.models) {
+        span.addEvent('registering_models');
+        for (const [modelType, handler] of Object.entries(plugin.models)) {
+          this.registerModel(
+            modelType as ModelTypeName,
+            handler as (params: any) => Promise<any>,
+            plugin.name,
+            plugin?.priority
+          );
+        }
+      }
+
+      // Register plugin routes
+      if (plugin.routes) {
+        span.addEvent('registering_routes');
+        for (const route of plugin.routes) {
+          this.routes.push(route);
+        }
+      }
+
+      // Register plugin events
+      if (plugin.events) {
+        span.addEvent('registering_events');
+        for (const [eventName, eventHandlers] of Object.entries(plugin.events)) {
+          for (const eventHandler of eventHandlers) {
+            this.registerEvent(eventName, eventHandler);
+          }
+        }
+      }
+
+      if (plugin.services) {
+        span.addEvent('registering_services');
+        for (const service of plugin.services) {
+          if (this.isInitialized) {
+            await this.registerService(service);
+          } else {
+            this.servicesInitQueue.add(service);
+          }
+        }
+      }
+
+      span.addEvent('plugin_registration_complete');
+    });
+  }
+
+  getAllServices(): Map<ServiceTypeName, Service> {
+    return this.services;
+  }
+
+  async stop() {
+    return this.startSpan('AgentRuntime.stop', async (span) => {
+      span.setAttributes({
+        'agent.id': this.agentId,
+        'agent.name': this.character?.name || 'unknown',
+      });
+
+      this.runtimeLogger.debug(`runtime::stop - character ${this.character.name}`);
+      span.addEvent('stopping_services');
+
+      // Stop all registered clients
+      for (const [serviceName, service] of this.services) {
+        this.runtimeLogger.debug(`runtime::stop - requesting service stop for ${serviceName}`);
+        span.addEvent(`stopping_service_${serviceName}`);
+        await service.stop();
+      }
+
+      span.addEvent('all_services_stopped');
+    });
+  }
+
+  async initialize(): Promise<void> {
+    return this.startSpan('AgentRuntime.initialize', async (span) => {
+      span.setAttributes({
+        'agent.id': this.agentId,
+        'agent.name': this.character?.name || 'unknown',
+        'plugins.count': this.plugins.length,
+      });
+
+      if (this.isInitialized) {
+        span.addEvent('agent_already_initialized');
+        this.runtimeLogger.warn('Agent already initialized');
+        return;
+      }
+
+      span.addEvent('initialization_started');
+
+      // Track registered plugins to avoid duplicates
+      const registeredPluginNames = new Set<string>();
+
+      // Load and register plugins from character configuration
+      const pluginRegistrationPromises = [];
+
+      // Register plugins that were provided in the constructor
+      for (const plugin of [...this.plugins]) {
+        if (plugin && !registeredPluginNames.has(plugin.name)) {
+          registeredPluginNames.add(plugin.name);
+          pluginRegistrationPromises.push(await this.registerPlugin(plugin));
+        }
+      }
+
+      span.addEvent('plugins_setup');
+      span.setAttributes({
+        registered_plugins: Array.from(registeredPluginNames).join(','),
+      });
+
+      // Ensure adapter is initialized
+      if (!this.adapter) {
+        this.runtimeLogger.error(
+          'Database adapter not initialized. Make sure @elizaos/plugin-sql is included in your plugins.'
+        );
+        throw new Error(
+          'Database adapter not initialized. The SQL plugin (@elizaos/plugin-sql) is required for agent initialization. Please ensure it is included in your character configuration.'
+        );
+      }
+
+      try {
+        await this.adapter.init();
+        span.addEvent('adapter_initialized');
+
+        // First create the agent entity directly
+        // Ensure agent exists first (this is critical for test mode)
+        const existingAgent = await this.adapter.ensureAgentExists(
+          this.character as Partial<Agent>
+        );
+        span.addEvent('agent_exists_verified');
+
+        if (!existingAgent) {
+          const errorMsg = `Agent ${this.character.name} does not exist in database after ensureAgentExists call`;
+          span.setStatus({ code: SpanStatusCode.ERROR, message: errorMsg });
+          throw new Error(errorMsg);
+        }
+
+        // No need to transform agent's own ID
+        let agentEntity = await this.adapter.getEntityById(this.agentId);
+
+        if (!agentEntity) {
+          span.addEvent('creating_agent_entity');
+          const created = await this.createEntity({
+            id: this.agentId,
+            agentId: existingAgent.id,
+            names: Array.from(new Set([this.character.name].filter(Boolean))) as string[],
+            metadata: {},
+          });
+
+          if (!created) {
+            const errorMsg = `Failed to create entity for agent ${this.agentId}`;
+            span.setStatus({ code: SpanStatusCode.ERROR, message: errorMsg });
+            throw new Error(errorMsg);
+          }
+
+          agentEntity = await this.adapter.getEntityById(this.agentId);
+          if (!agentEntity) throw new Error(`Agent entity not found for ${this.agentId}`);
+
+          this.runtimeLogger.debug(
+            `Success: Agent entity created successfully for ${this.character.name}`
+          );
+          span.addEvent('agent_entity_created');
+        } else {
+          span.addEvent('agent_entity_exists');
+        }
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        span.recordException(error as Error);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: errorMsg });
+        this.runtimeLogger.error(`Failed to create agent entity: ${errorMsg}`);
+        throw error;
+      }
+
+      // Create group for the agent and register all plugins in parallel
+      try {
+        span.addEvent('creating_group_and_registering_plugins');
+        await Promise.all([...pluginRegistrationPromises]);
+        span.addEvent('room_created_and_plugins_registered');
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        span.recordException(error as Error);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: errorMsg });
+        this.runtimeLogger.error(`Failed to initialize: ${errorMsg}`);
+        throw error;
+      }
+
+      // Add agent as participant in its own room
+      try {
+        const room = await this.adapter.getRoom(this.agentId);
+        if (!room) {
+          const room = await this.adapter.createRoom({
+            id: this.agentId,
+            name: this.character.name,
+            source: 'elizaos',
+            type: ChannelType.SELF,
+            channelId: this.agentId,
+            serverId: this.agentId,
+            worldId: this.agentId,
+          });
+        }
+
+        span.addEvent('adding_agent_as_participant');
+        // No need to transform agent ID
+        const participants = await this.adapter.getParticipantsForRoom(this.agentId);
+        if (!participants.includes(this.agentId)) {
+          const added = await this.adapter.addParticipant(this.agentId, this.agentId);
+          if (!added) {
+            const errorMsg = `Failed to add agent ${this.agentId} as participant to its own room`;
+            span.setStatus({ code: SpanStatusCode.ERROR, message: errorMsg });
+            throw new Error(errorMsg);
+          }
+          this.runtimeLogger.debug(
+            `Agent ${this.character.name} linked to its own room successfully`
+          );
+          span.addEvent('agent_added_as_participant');
+        } else {
+          span.addEvent('agent_already_participant');
+        }
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        span.recordException(error as Error);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: errorMsg });
+        this.runtimeLogger.error(`Failed to add agent as participant: ${errorMsg}`);
+        throw error;
+      }
+
+      // Check if TEXT_EMBEDDING model is registered
+      const embeddingModel = this.getModel(ModelType.TEXT_EMBEDDING);
+      if (!embeddingModel) {
+        span.addEvent('embedding_model_missing');
+        this.runtimeLogger.warn(
+          `[AgentRuntime][${this.character.name}] No TEXT_EMBEDDING model registered. Skipping embedding dimension setup.`
+        );
+      } else {
+        // Only run ensureEmbeddingDimension if we have an embedding model
+        span.addEvent('setting_up_embedding_dimension');
+        await this.ensureEmbeddingDimension();
+        span.addEvent('embedding_dimension_setup_complete');
+      }
+
+      // Process character knowledge
+      if (this.character?.knowledge && this.character.knowledge.length > 0) {
+        span.addEvent('processing_character_knowledge');
+        span.setAttributes({
+          'knowledge.count': this.character.knowledge.length,
+        });
+
+        const stringKnowledge = this.character.knowledge.filter(
+          (item): item is string => typeof item === 'string'
+        );
+        await this.processCharacterKnowledge(stringKnowledge);
+        span.addEvent('character_knowledge_processed');
+      }
+
+      // Start all deferred services now that runtime is ready
+      span.addEvent('starting_deferred_services');
+      span.setAttributes({
+        'deferred_services.count': this.servicesInitQueue.size,
+      });
+
+      for (const service of this.servicesInitQueue) {
+        await this.registerService(service);
+      }
+
+      span.addEvent('initialization_completed');
+    });
+  }
+
+  async getConnection(): Promise<PGlite | Pool> {
+    if (!this.adapter) {
+      throw new Error('Database adapter not registered');
+    }
+    return this.adapter.getConnection();
+  }
+
+  private async handleProcessingError(error: any, context: string) {
+    this.runtimeLogger.error(`Error ${context}:`, error?.message || error || 'Unknown error');
+    throw error;
+  }
+
+  private async checkExistingKnowledge(knowledgeId: UUID): Promise<boolean> {
+    const existingDocument = await this.getMemoryById(knowledgeId);
+    return !!existingDocument;
+  }
+
+  async getKnowledge(
+    message: Memory,
+    scope?: { roomId?: UUID; worldId?: UUID; entityId?: UUID }
+  ): Promise<KnowledgeItem[]> {
+    console.log('*** getKnowledge', message);
+    return this.startSpan('AgentRuntime.getKnowledge', async (span) => {
+      // Add validation for message
+      if (!message?.content?.text) {
+        span.addEvent('invalid_message');
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: 'Invalid message for knowledge query',
+        });
+        this.runtimeLogger.warn('Invalid message for knowledge query:', {
+          message,
+          content: message?.content,
+          text: message?.content?.text,
+        });
+        return [];
+      }
+
+      // Validate processed text
+      if (!message?.content?.text || message?.content?.text.trim().length === 0) {
+        span.addEvent('empty_text');
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: 'Empty text for knowledge query',
+        });
+        this.runtimeLogger.warn('Empty text for knowledge query');
+        return [];
+      }
+
+      span.setAttributes({
+        'message.id': message.id,
+        'query.length': message.content.text.length,
+        'agent.id': this.agentId,
+      });
+
+      span.addEvent('generating_embedding');
+      const embedding = await this.useModel(ModelType.TEXT_EMBEDDING, {
+        text: message?.content?.text,
+      });
+
+      span.addEvent('searching_memories');
+      span.setAttributes({
+        'embedding.length': embedding.length,
+      });
+
+      console.log('*** searching memories');
+
+      // Determine the filter scope
+      // Build filter scope with only defined values
+      const filterScope: { roomId?: UUID; worldId?: UUID; entityId?: UUID } = {};
+      if (scope?.roomId) filterScope.roomId = scope.roomId;
+      if (scope?.worldId) filterScope.worldId = scope.worldId;
+      if (scope?.entityId) filterScope.entityId = scope.entityId;
+
+      span.addEvent('determined_filter_scope', {
+        ...(filterScope.roomId && { 'filter.roomId': filterScope.roomId }),
+        ...(filterScope.worldId && { 'filter.worldId': filterScope.worldId }),
+        ...(filterScope.entityId && { 'filter.entityId': filterScope.entityId }),
+      });
+
+      const fragments = await this.searchMemories({
+        tableName: 'knowledge',
+        embedding,
+        query: message?.content?.text,
+        ...filterScope,
+        count: 20,
+        match_threshold: 0.1,
+      });
+
+      console.log('*** fragments', fragments);
+
+      span.addEvent('knowledge_retrieved');
+      span.setAttributes({
+        'fragments.count': fragments.length,
+      });
+
+      // Return the fragments directly as this is used from prompts.
+      // Example usage in prompts: # provider KNOWLEDGE
+      return fragments.map((fragment) => ({
+        id: fragment.id,
+        content: fragment.content,
+        similarity: fragment.similarity,
+        metadata: fragment.metadata,
+        worldId: fragment.worldId, // Include worldId if available on fragment
+      }));
+    });
+  }
+
+  async addKnowledge(
+    item: KnowledgeItem,
+    options = {
+      targetTokens: 1500,
+      overlap: 200,
+      modelContextSize: 4096,
+    },
+    scope = {
+      roomId: this.agentId,
+      entityId: this.agentId,
+      worldId: this.agentId,
+    }
+  ) {
+    return this.startSpan('AgentRuntime.addKnowledge', async (span) => {
+      span.setAttributes({
+        'item.id': item.id,
+        'agent.id': this.agentId,
+        'options.targetTokens': options.targetTokens,
+        'options.overlap': options.overlap,
+        // Log scope
+        'scope.roomId': scope?.roomId,
+        'scope.worldId': scope?.worldId,
+        'scope.entityId': scope?.entityId,
+      });
+
+      // Define default scope if not provided
+      const finalScope = {
+        roomId: scope?.roomId ?? this.agentId, // Default roomId to agentId
+        worldId: scope?.worldId, // Default worldId to undefined/null
+        entityId: scope?.entityId ?? this.agentId, // Default entityId to agentId
+      };
+
+      // First store the document
+      const documentMemory: Memory = {
+        id: item.id,
+        agentId: this.agentId,
+        roomId: finalScope.roomId,
+        worldId: finalScope.worldId,
+        entityId: finalScope.entityId,
+        content: item.content,
+        metadata: item.metadata || {
+          type: MemoryType.DOCUMENT,
+          timestamp: Date.now(),
+        },
+      };
+
+      span.addEvent('storing_document');
+      await this.createMemory(documentMemory, 'documents');
+      span.addEvent('document_stored');
+
+      // Create fragments using splitChunks
+      span.addEvent('splitting_chunks');
+      const fragments = await splitChunks(item.content.text, options.targetTokens, options.overlap);
+      span.setAttributes({
+        'fragments.count': fragments.length,
+      });
+      span.addEvent('chunks_split');
+
+      // Track progress
+      let fragmentsProcessed = 0;
+
+      // Store each fragment with link to source document
+      span.addEvent('storing_fragments');
+      for (let i = 0; i < fragments.length; i++) {
+        try {
+          span.addEvent(`generating_embedding_${i}`);
+          const embedding = await this.useModel(ModelType.TEXT_EMBEDDING, fragments[i]);
+
+          const fragmentMemory: Memory = {
+            id: createUniqueUuid(this, `${item.id}-fragment-${i}`),
+            agentId: this.agentId,
+            roomId: finalScope.roomId,
+            worldId: finalScope.worldId,
+            entityId: finalScope.entityId,
+            embedding,
+            content: { text: fragments[i] },
+            metadata: {
+              type: MemoryType.FRAGMENT,
+              documentId: item.id, // Link to source document
+              position: i, // Keep track of order
+              timestamp: Date.now(),
+            },
+          };
+
+          await this.createMemory(fragmentMemory, 'knowledge');
+          fragmentsProcessed++;
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          span.recordException(error as Error);
+          span.setAttributes({
+            'error.fragment': i,
+            'error.message': errorMsg,
+          });
+          this.runtimeLogger.error(`Error processing fragment ${i}: ${errorMsg}`);
+        }
+      }
+
+      span.setAttributes({
+        'fragments.processed': fragmentsProcessed,
+        'fragments.success_rate': fragmentsProcessed / fragments.length,
+      });
+      span.addEvent('knowledge_processing_complete');
+    });
+  }
+
+  async processCharacterKnowledge(items: string[]) {
+    const processingPromises = items.map(async (item) => {
+      await this.knowledgeProcessingSemaphore.acquire();
+      try {
+        const knowledgeId = createUniqueUuid(this, item);
+        if (await this.checkExistingKnowledge(knowledgeId)) {
+          return;
+        }
+
+        this.runtimeLogger.debug(
+          'Processing knowledge for ',
+          this.character.name,
+          ' - ',
+          item.slice(0, 100)
+        );
+
+        // Extract metadata from the knowledge item
+        let metadata: MemoryMetadata = {
+          type: MemoryType.DOCUMENT,
+          timestamp: Date.now(),
+        };
+
+        const pathMatch = item.match(/^Path: (.+?)(?:\n|\r\n)/);
+        if (pathMatch) {
+          const filePath = pathMatch[1].trim();
+          const extension = filePath.split('.').pop() || '';
+          const filename = filePath.split('/').pop() || '';
+          const title = filename.replace(`.${extension}`, '');
+
+          metadata = {
+            ...metadata,
+            path: filePath,
+            filename: filename,
+            fileExt: extension,
+            title: title,
+            fileType: `text/${extension || 'plain'}`,
+            fileSize: item.length,
+            source: 'character',
+          };
+        }
+
+        // Add knowledge with agent-specific scope
+        await this.addKnowledge(
+          {
+            id: knowledgeId,
+            content: {
+              text: item,
+            },
+            metadata,
+          },
+          undefined, // Default options
+          {
+            // Scope to the agent itself
+            roomId: this.agentId,
+            entityId: this.agentId,
+            worldId: this.agentId,
+          }
+        );
+      } catch (error) {
+        await this.handleProcessingError(error, 'processing character knowledge');
+      } finally {
+        this.knowledgeProcessingSemaphore.release();
+      }
+    });
+
+    await Promise.all(processingPromises);
+  }
+
+  setSetting(key: string, value: string | boolean | null | any, secret = false) {
+    if (secret) {
+      if (!this.character.secrets) {
+        this.character.secrets = {};
+      }
+      this.character.secrets[key] = value;
+    } else {
+      if (!this.character.settings) {
+        this.character.settings = {};
+      }
+      this.character.settings[key] = value;
+    }
+  }
+
+  getSetting(key: string): string | boolean | null | any {
+    const value =
+      this.character.secrets?.[key] ||
+      this.character.settings?.[key] ||
+      this.character.settings?.secrets?.[key] ||
+      this.settings[key];
+
+    const decryptedValue = decryptSecret(value, getSalt());
+
+    if (decryptedValue === 'true') return true;
+    if (decryptedValue === 'false') return false;
+    return decryptedValue || null;
+  }
+
+  /**
+   * Get the number of messages that are kept in the conversation buffer.
+   * @returns The number of recent messages to be kept in memory.
+   */
+  getConversationLength() {
+    return this.#conversationLength;
+  }
+
+  registerDatabaseAdapter(adapter: IDatabaseAdapter) {
+    if (this.adapter) {
+      this.runtimeLogger.warn(
+        'Database adapter already registered. Additional adapters will be ignored. This may lead to unexpected behavior.'
+      );
+    } else {
+      this.adapter = adapter;
+      this.runtimeLogger.debug('Success: Database adapter registered successfully.');
+    }
+  }
+
+  /**
+   * Register a provider for the agent to use.
+   * @param provider The provider to register.
+   */
+  registerProvider(provider: Provider) {
+    this.providers.push(provider);
+    this.runtimeLogger.debug(`Success: Provider ${provider.name} registered successfully.`);
+  }
+
+  /**
+   * Register an action for the agent to perform.
+   * @param action The action to register.
+   */
+  registerAction(action: Action) {
+    this.runtimeLogger.debug(
+      `${this.character.name}(${this.agentId}) - Registering action: ${action.name}`
+    );
+    // if an action with the same name already exists, throw a warning and don't add the new action
+    if (this.actions.find((a) => a.name === action.name)) {
+      this.runtimeLogger.warn(
+        `${this.character.name}(${this.agentId}) - Action ${action.name} already exists. Skipping registration.`
+      );
+    } else {
+      this.actions.push(action);
+      this.runtimeLogger.debug(
+        `${this.character.name}(${this.agentId}) - Action ${action.name} registered successfully.`
+      );
+    }
+  }
+
+  /**
+   * Register an evaluator to assess and guide the agent's responses.
+   * @param evaluator The evaluator to register.
+   */
+  registerEvaluator(evaluator: Evaluator) {
+    this.evaluators.push(evaluator);
+  }
+
+  /**
+   * Register a context provider to provide context for message generation.
+   * @param provider The context provider to register.
+   */
+  registerContextProvider(provider: Provider) {
+    this.providers.push(provider);
+  }
+
+  /**
+   * Process the actions of a message.
+   * @param message The message to process.
+   * @param responses The array of response memories to process actions from.
+   * @param state Optional state object for the action processing.
+   * @param callback Optional callback handler for action results.
+   */
+  async processActions(
+    message: Memory,
+    responses: Memory[],
+    state?: State,
+    callback?: HandlerCallback
+  ): Promise<void> {
+    return this.startSpan('AgentRuntime.processActions', async (span) => {
+      span.setAttributes({
+        'message.id': message.id,
+        'responses.count': responses.length,
+        'agent.id': this.agentId,
+      });
+
+      for (const response of responses) {
+        if (!response.content?.actions || response.content.actions.length === 0) {
+          span.addEvent('no_actions_in_response');
+          this.runtimeLogger.warn('No action found in the response content.');
+          continue;
+        }
+
+        const actions = response.content.actions;
+        span.setAttributes({
+          'actions.count': actions.length,
+          'actions.names': JSON.stringify(actions),
+        });
+
+        function normalizeAction(action: string) {
+          return action.toLowerCase().replace('_', '');
+        }
+        this.runtimeLogger.debug(
+          `Found actions: ${this.actions.map((a) => normalizeAction(a.name))}`
+        );
+
+        for (const responseAction of actions) {
+          span.addEvent(`processing_action_${responseAction}`);
+          state = await this.composeState(message, ['RECENT_MESSAGES']);
+
+          this.runtimeLogger.debug(`Success: Calling action: ${responseAction}`);
+          const normalizedResponseAction = normalizeAction(responseAction);
+          let action = this.actions.find(
+            (a: { name: string }) =>
+              normalizeAction(a.name).includes(normalizedResponseAction) || // the || is kind of a fuzzy match
+              normalizedResponseAction.includes(normalizeAction(a.name)) //
+          );
+
+          if (action) {
+            span.addEvent(`found_exact_action_${action.name}`);
+            this.runtimeLogger.debug(`Success: Found action: ${action?.name}`);
+          } else {
+            span.addEvent('looking_for_similar_action');
+            this.runtimeLogger.debug('Attempting to find action in similes.');
+            for (const _action of this.actions) {
+              const simileAction = _action.similes?.find(
+                (simile) =>
+                  simile.toLowerCase().replace('_', '').includes(normalizedResponseAction) ||
+                  normalizedResponseAction.includes(simile.toLowerCase().replace('_', ''))
               );
+              if (simileAction) {
+                action = _action;
+                span.addEvent(`found_similar_action_${action.name}`);
+                this.runtimeLogger.debug(`Success: Action found in similes: ${action.name}`);
+                break;
+              }
             }
+          }
 
-            ps.push(knowledge.set(this, {
-                id: knowledgeId,
-                content: {
-                    text: item,
-                },
-            }));
+          if (!action) {
+            const errorMsg = `No action found for: ${responseAction}`;
+            span.addEvent('action_not_found');
+            span.setAttributes({
+              'error.action': responseAction,
+            });
+            this.runtimeLogger.error(errorMsg);
+
+            const actionMemory: Memory = {
+              id: uuidv4() as UUID,
+              entityId: message.entityId,
+              roomId: message.roomId,
+              worldId: message.worldId,
+              content: {
+                thought: errorMsg,
+                source: 'auto',
+              },
+            };
+
+            await this.createMemory(actionMemory, 'messages');
+
+            continue;
+          }
+
+          if (!action.handler) {
+            span.addEvent('action_has_no_handler');
+            span.setAttributes({
+              'error.action': action.name,
+            });
+            this.runtimeLogger.error(`Action ${action.name} has no handler.`);
+            continue;
+          }
+
+          try {
+            span.addEvent(`executing_action_${action.name}`);
+            this.runtimeLogger.debug(`Executing handler for action: ${action.name}`);
+
+            // Wrap individual action handler invocation in its own span
+            await this.startSpan(`Action.${action.name}`, async (actionSpan) => {
+              actionSpan.setAttributes({
+                'action.name': action.name,
+                'parent_span.id': span.spanContext().spanId, // Link to parent processActions span
+              });
+
+              // Log input parameters (avoid logging potentially large state)
+              actionSpan.addEvent('action.input', {
+                'message.id': message.id,
+                'state.keys': state ? JSON.stringify(Object.keys(state.values)) : 'none',
+
+                options: JSON.stringify({}), // Hardcoded empty options for now
+                'responses.count': responses?.length ?? 0,
+                'responses.ids': JSON.stringify(responses?.map((r) => r.id) ?? []),
+              });
+
+              try {
+                // Execute the action handler and capture the result
+                const result = await action.handler(this, message, state, {}, callback, responses);
+
+                // Log the result in the output event
+                actionSpan.addEvent('action.output', {
+                  status: 'success',
+                  result: JSON.stringify(result, safeReplacer()), // Log stringified result
+                });
+                actionSpan.setStatus({ code: SpanStatusCode.OK });
+              } catch (handlerError) {
+                const handlerErrorMessage =
+                  handlerError instanceof Error ? handlerError.message : String(handlerError);
+                actionSpan.recordException(handlerError as Error);
+                actionSpan.setStatus({ code: SpanStatusCode.ERROR, message: handlerErrorMessage });
+                actionSpan.setAttributes({
+                  'error.message': handlerErrorMessage,
+                });
+                actionSpan.addEvent('action.output', {
+                  status: 'error',
+                  error: handlerErrorMessage,
+                });
+
+                const actionMemory: Memory = {
+                  id: uuidv4() as UUID,
+                  entityId: message.entityId,
+                  roomId: message.roomId,
+                  worldId: message.worldId,
+                  content: {
+                    thought: handlerErrorMessage,
+                    source: 'auto',
+                  },
+                };
+
+                await this.createMemory(actionMemory, 'messages');
+
+                // Re-throw the error to be caught by the outer try/catch
+                throw handlerError;
+              }
+            }); // End of Action.${action.name} span
+
+            span.addEvent(`action_executed_successfully_${action.name}`);
+            this.runtimeLogger.debug(`Success: Action ${action.name} executed successfully.`);
+
+            // log to database
+            this.adapter.log({
+              entityId: message.entityId,
+              roomId: message.roomId,
+              type: 'action',
+              body: {
+                action: action.name,
+                message: message.content.text,
+                messageId: message.id,
+                state,
+                responses,
+              },
+            });
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            span.recordException(error as Error);
+            span.setStatus({
+              code: SpanStatusCode.ERROR,
+              message: errorMessage,
+            });
+            span.setAttributes({
+              'error.action': action.name,
+              'error.message': errorMessage,
+            });
+            this.runtimeLogger.error(error);
+
+            const actionMemory: Memory = {
+              id: uuidv4() as UUID,
+              content: {
+                thought: errorMessage,
+                source: 'auto',
+              },
+              entityId: message.entityId,
+              roomId: message.roomId,
+              worldId: message.worldId,
+            };
+
+            await this.createMemory(actionMemory, 'messages');
+
+            throw error;
+          }
         }
-        // wait for it all to be added
-        await Promise.all(ps);
-        elizaLogger.success(this.character.name, 'knowledge is synchronized');
+      }
+    });
+  }
+
+  /**
+   * Evaluate the message and state using the registered evaluators.
+   * @param message The message to evaluate.
+   * @param state The state of the agent.
+   * @param didRespond Whether the agent responded to the message.~
+   * @param callback The handler callback
+   * @returns The results of the evaluation.
+   */
+  async evaluate(
+    message: Memory,
+    state: State,
+    didRespond?: boolean,
+    callback?: HandlerCallback,
+    responses?: Memory[]
+  ) {
+    // Start root span for evaluation
+    return this.startSpan('AgentRuntime.evaluate', async (span) => {
+      span.setAttributes({
+        'agent.id': this.agentId,
+        'character.name': this.character?.name,
+        'message.id': message?.id,
+        'room.id': message?.roomId,
+        'entity.id': message?.entityId,
+        did_respond: didRespond,
+        responses_count: responses?.length || 0,
+      });
+      span.addEvent('evaluation_started');
+
+      const evaluatorPromises = this.evaluators.map(async (evaluator: Evaluator) => {
+        if (!evaluator.handler) {
+          return null;
+        }
+        if (!didRespond && !evaluator.alwaysRun) {
+          return null;
+        }
+        const result = await evaluator.validate(this, message, state);
+
+        if (result) {
+          return evaluator;
+        }
+        return null;
+      });
+
+      const evaluators = (await Promise.all(evaluatorPromises)).filter(Boolean) as Evaluator[];
+      span.setAttribute('selected_evaluators_count', evaluators.length);
+      span.addEvent('evaluator_selection_complete', {
+        'evaluator.names': JSON.stringify(evaluators.map((e) => e.name)),
+      });
+
+      // get the evaluators that were chosen by the response handler
+
+      if (evaluators.length === 0) {
+        span.addEvent('no_evaluators_selected');
+        return [];
+      }
+
+      // Note: composeState is already instrumented, will be nested automatically
+      state = await this.composeState(message, ['RECENT_MESSAGES', 'EVALUATORS']);
+
+      span.addEvent('evaluator_execution_start');
+      await Promise.all(
+        evaluators.map(async (evaluator) => {
+          if (evaluator.handler) {
+            // TODO: Instrument individual evaluator handlers if needed (potentially in plugins)
+            await evaluator.handler(this, message, state, {}, callback, responses);
+            // log to database
+            this.adapter.log({
+              entityId: message.entityId,
+              roomId: message.roomId,
+              type: 'evaluator',
+              body: {
+                evaluator: evaluator.name,
+                messageId: message.id,
+                message: message.content.text,
+                state, // Consider if state should be logged here, can be large
+              },
+            });
+          }
+        })
+      );
+      span.addEvent('evaluator_execution_complete');
+      span.addEvent('evaluation_complete');
+
+      return evaluators;
+    });
+  }
+
+  async ensureConnection({
+    entityId,
+    roomId,
+    worldId,
+    worldName,
+    userName,
+    name,
+    source,
+    type,
+    channelId,
+    serverId,
+    userId,
+    metadata,
+  }: {
+    entityId: UUID;
+    roomId: UUID;
+    worldId: UUID;
+    worldName?: string;
+    userName?: string;
+    name?: string;
+    source?: string;
+    type?: ChannelType;
+    channelId?: string;
+    serverId?: string;
+    userId?: UUID;
+    metadata?: Record<string, any>;
+  }) {
+    // if (entityId === this.agentId) {
+    //   throw new Error('Agent should not connect to itself');
+    // }
+
+    if (!worldId && serverId) {
+      worldId = createUniqueUuid(this, serverId);
     }
 
-    /**
-     * Processes character knowledge by creating document memories and fragment memories.
-     * This function takes an array of knowledge items, creates a document knowledge for each item if it doesn't exist,
-     * then chunks the content into fragments, embeds each fragment, and creates fragment knowledge.
-     * An array of knowledge items or objects containing id, path, and content.
-     */
-    private async processCharacterRAGKnowledge(
-        items: (string | { path: string; shared?: boolean })[],
-    ) {
-        let hasError = false;
+    const names = [name, userName].filter(Boolean);
+    const entityMetadata = {
+      [source]: {
+        id: userId,
+        name: name,
+        userName: userName,
+      },
+    };
 
-        for (const item of items) {
-            if (!item) continue;
+    // Step 1: Handle entity creation/update with proper error handling
+    try {
+      // First check if the entity exists
+      const entity = await this.adapter.getEntityById(entityId);
 
-            try {
-                // Check if item is marked as shared
-                let isShared = false;
-                let contentItem = item;
+      if (!entity) {
+        // Try to create the entity
+        try {
+          const success = await this.adapter.createEntity({
+            id: entityId,
+            names,
+            metadata: entityMetadata,
+            agentId: this.agentId,
+          });
 
-                // Only treat as shared if explicitly marked
-                if (typeof item === "object" && "path" in item) {
-                    isShared = item.shared === true;
-                    contentItem = item.path;
-                } else {
-                    contentItem = item;
-                }
-
-                // const knowledgeId = stringToUuid(contentItem);
-                const knowledgeId = this.ragKnowledgeManager.generateScopedId(
-                    contentItem,
-                    isShared,
-                );
-                const fileExtension = contentItem
-                    .split(".")
-                    .pop()
-                    ?.toLowerCase();
-
-                // Check if it's a file or direct knowledge
-                if (
-                    fileExtension &&
-                    ["md", "txt", "pdf"].includes(fileExtension)
-                ) {
-                    try {
-                        const filePath = join(this.knowledgeRoot, contentItem);
-                        // Get existing knowledge first with more detailed logging
-                        elizaLogger.debug("[RAG Query]", {
-                            knowledgeId,
-                            agentId: this.agentId,
-                            relativePath: contentItem,
-                            fullPath: filePath,
-                            isShared,
-                            knowledgeRoot: this.knowledgeRoot,
-                        });
-
-                        // Get existing knowledge first
-                        const existingKnowledge =
-                            await this.ragKnowledgeManager.getKnowledge({
-                                id: knowledgeId,
-                                agentId: this.agentId, // Keep agentId as it's used in OR query
-                            });
-
-                        elizaLogger.debug("[RAG Query Result]", {
-                            relativePath: contentItem,
-                            fullPath: filePath,
-                            knowledgeId,
-                            isShared,
-                            exists: existingKnowledge.length > 0,
-                            knowledgeCount: existingKnowledge.length,
-                            firstResult: existingKnowledge[0]
-                                ? {
-                                      id: existingKnowledge[0].id,
-                                      agentId: existingKnowledge[0].agentId,
-                                      contentLength:
-                                          existingKnowledge[0].content.text
-                                              .length,
-                                  }
-                                : null,
-                            results: existingKnowledge.map((k) => ({
-                                id: k.id,
-                                agentId: k.agentId,
-                                isBaseKnowledge: !k.id.includes("chunk"),
-                            })),
-                        });
-
-                        // Read file content
-                        const content: string = await readFile(
-                            filePath,
-                            "utf8",
-                        );
-                        if (!content) {
-                            hasError = true;
-                            continue;
-                        }
-
-                        if (existingKnowledge.length > 0) {
-                            const existingContent =
-                                existingKnowledge[0].content.text;
-
-                            elizaLogger.debug("[RAG Compare]", {
-                                path: contentItem,
-                                knowledgeId,
-                                isShared,
-                                existingContentLength: existingContent.length,
-                                newContentLength: content.length,
-                                contentSample: content.slice(0, 100),
-                                existingContentSample: existingContent.slice(
-                                    0,
-                                    100,
-                                ),
-                                matches: existingContent === content,
-                            });
-
-                            if (existingContent === content) {
-                                elizaLogger.info(
-                                    `${isShared ? "Shared knowledge" : "Knowledge"} ${contentItem} unchanged, skipping`,
-                                );
-                                continue;
-                            }
-
-                            // Content changed, remove old knowledge before adding new
-                            elizaLogger.info(
-                                `${isShared ? "Shared knowledge" : "Knowledge"} ${contentItem} changed, updating...`,
-                            );
-                            await this.ragKnowledgeManager.removeKnowledge(
-                                knowledgeId,
-                            );
-                            await this.ragKnowledgeManager.removeKnowledge(
-                                `${knowledgeId}-chunk-*` as UUID,
-                            );
-                        }
-
-                        elizaLogger.info(
-                            `Processing ${fileExtension.toUpperCase()} file content for`,
-                            this.character.name,
-                            "-",
-                            contentItem,
-                        );
-
-                        await this.ragKnowledgeManager.processFile({
-                            path: contentItem,
-                            content: content,
-                            type: fileExtension as "pdf" | "md" | "txt",
-                            isShared: isShared,
-                        });
-                    } catch (error: any) {
-                        hasError = true;
-                        elizaLogger.error(
-                            `Failed to read knowledge file ${contentItem}. Error details:`,
-                            error?.message || error || "Unknown error",
-                        );
-                        continue;
-                    }
-                } else {
-                    // Handle direct knowledge string
-                    elizaLogger.info(
-                        "Processing direct knowledge for",
-                        this.character.name,
-                        "-",
-                        contentItem.slice(0, 100),
-                    );
-
-                    const existingKnowledge =
-                        await this.ragKnowledgeManager.getKnowledge({
-                            id: knowledgeId,
-                            agentId: this.agentId,
-                        });
-
-                    if (existingKnowledge.length > 0) {
-                        elizaLogger.info(
-                            `Direct knowledge ${knowledgeId} already exists, skipping`,
-                        );
-                        continue;
-                    }
-
-                    await this.ragKnowledgeManager.createKnowledge({
-                        id: knowledgeId,
-                        agentId: this.agentId,
-                        content: {
-                            text: contentItem,
-                            metadata: {
-                                type: "direct",
-                            },
-                        },
-                    });
-                }
-            } catch (error: any) {
-                hasError = true;
-                elizaLogger.error(
-                    `Error processing knowledge item ${item}:`,
-                    error?.message || error || "Unknown error",
-                );
-                continue;
-            }
-        }
-
-        if (hasError) {
-            elizaLogger.warn(
-                "Some knowledge items failed to process, but continuing with available knowledge",
+          if (success) {
+            this.runtimeLogger.debug(
+              `Created new entity ${entityId} for user ${name || userName || 'unknown'}`
             );
+          } else {
+            throw new Error(`Failed to create entity ${entityId}`);
+          }
+        } catch (error) {
+          // If we get a duplicate key error, the entity exists in the database but isn't
+          // associated with this agent - this is expected in multi-agent scenarios
+          if (error.message?.includes('duplicate key') || error.code === '23505') {
+            this.runtimeLogger.debug(
+              `Entity ${entityId} exists in database but not for this agent. This is normal in multi-agent setups.`
+            );
+          } else {
+            // For any other errors, re-throw
+            throw error;
+          }
         }
+      } else {
+        // Entity exists for this agent, update if needed
+        await this.adapter.updateEntity({
+          id: entityId,
+          names: [...new Set([...(entity.names || []), ...names])].filter(Boolean),
+          metadata: {
+            ...entity.metadata,
+            [source]: {
+              ...entity.metadata?.[source],
+              name: name,
+              userName: userName,
+            },
+          },
+          agentId: this.agentId,
+        });
+      }
+
+      // Step 2: Ensure world exists
+      await this.ensureWorldExists({
+        id: worldId,
+        name: worldName || serverId ? `World for server ${serverId}` : `World for room ${roomId}`,
+        agentId: this.agentId,
+        serverId: serverId || 'default',
+        metadata,
+      });
+
+      // Step 3: Ensure room exists
+      await this.ensureRoomExists({
+        id: roomId,
+        name: name,
+        source,
+        type,
+        channelId,
+        serverId,
+        worldId,
+      });
+
+      // Step 4: Add participants to the room
+      // For the user entity, we'll try even if we couldn't retrieve it
+      try {
+        await this.ensureParticipantInRoom(entityId, roomId);
+      } catch (error) {
+        // If the normal flow fails because the entity isn't found,
+        // try direct participant addition as a clean fallback
+        if (error.message?.includes('not found')) {
+          const added = await this.adapter.addParticipant(entityId, roomId);
+          if (!added) {
+            throw new Error(`Failed to add participant ${entityId} to room ${roomId}`);
+          }
+          this.runtimeLogger.debug(`Added participant ${entityId} to room ${roomId} directly`);
+        } else {
+          throw error;
+        }
+      }
+
+      // Always add the agent to the room
+      await this.ensureParticipantInRoom(this.agentId, roomId);
+
+      this.runtimeLogger.debug(
+        `Success: Successfully connected entity ${entityId} in room ${roomId}`
+      );
+    } catch (error) {
+      this.runtimeLogger.error(
+        `Failed to ensure connection: ${error instanceof Error ? error.message : String(error)}`
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Ensures a participant is added to a room, checking that the entity exists first
+   */
+  async ensureParticipantInRoom(entityId: UUID, roomId: UUID) {
+    // Make sure entity exists in database before adding as participant
+    const entity = await this.adapter.getEntityById(entityId);
+
+    // If entity is not found but it's not the agent itself, we might still want to proceed
+    // This can happen when an entity exists in the database but isn't associated with this agent
+    if (!entity && entityId !== this.agentId) {
+      this.runtimeLogger.warn(
+        `Entity ${entityId} not directly accessible to agent ${this.agentId}. Will attempt to add as participant anyway.`
+      );
+    } else if (!entity) {
+      throw new Error(`User ${entityId} not found`);
     }
 
-    /**
-     * Processes directory-based RAG knowledge by recursively loading and processing files.
-     * @param dirConfig The directory configuration containing path and shared flag
-     */
-    private async processCharacterRAGDirectory(dirConfig: {
-        directory: string;
-        shared?: boolean;
-    }) {
-        if (!dirConfig.directory) {
-            elizaLogger.error("[RAG Directory] No directory specified");
-            return;
-        }
+    // Get current participants
+    const participants = await this.adapter.getParticipantsForRoom(roomId);
 
-        // Sanitize directory path to prevent traversal attacks
-        const sanitizedDir = dirConfig.directory.replace(/\.\./g, "");
-        const dirPath = join(this.knowledgeRoot, sanitizedDir);
+    // Only add if not already a participant
+    if (!participants.includes(entityId)) {
+      // Add participant using the ID
+      const added = await this.adapter.addParticipant(entityId, roomId);
+
+      if (!added) {
+        throw new Error(`Failed to add participant ${entityId} to room ${roomId}`);
+      }
+
+      if (entityId === this.agentId) {
+        this.runtimeLogger.debug(
+          `Agent ${this.character.name} linked to room ${roomId} successfully.`
+        );
+      } else {
+        this.runtimeLogger.debug(`User ${entityId} linked to room ${roomId} successfully.`);
+      }
+    }
+  }
+
+  async removeParticipant(entityId: UUID, roomId: UUID): Promise<boolean> {
+    return await this.adapter.removeParticipant(entityId, roomId);
+  }
+
+  async getParticipantsForEntity(entityId: UUID): Promise<Participant[]> {
+    return await this.adapter.getParticipantsForEntity(entityId);
+  }
+
+  async getParticipantsForRoom(roomId: UUID): Promise<UUID[]> {
+    return await this.adapter.getParticipantsForRoom(roomId);
+  }
+
+  async addParticipant(entityId: UUID, roomId: UUID): Promise<boolean> {
+    return await this.adapter.addParticipant(entityId, roomId);
+  }
+
+  /**
+   * Ensure the existence of a world.
+   */
+  async ensureWorldExists({ id, name, serverId, metadata }: World) {
+    // try {
+    const world = await this.getWorld(id);
+    if (!world) {
+      this.runtimeLogger.debug('Creating world:', {
+        id,
+        name,
+        serverId,
+        agentId: this.agentId,
+      });
+      await this.adapter.createWorld({
+        id,
+        name,
+        agentId: this.agentId,
+        serverId: serverId || 'default',
+        metadata,
+      });
+      this.runtimeLogger.debug(`World ${id} created successfully.`);
+    }
+    // } catch (error) {
+    //   this.runtimeLogger.error(
+    //     `Failed to ensure world exists: ${
+    //       error instanceof Error ? error.message : String(error)
+    //     }`
+    //   );
+    //   throw error;
+    // }
+  }
+
+  /**
+   * Ensure the existence of a room between the agent and a user. If no room exists, a new room is created and the user
+   * and agent are added as participants. The room ID is returned.
+   * @param entityId - The user ID to create a room with.
+   * @returns The room ID of the room between the agent and the user.
+   * @throws An error if the room cannot be created.
+   */
+  async ensureRoomExists({ id, name, source, type, channelId, serverId, worldId, metadata }: Room) {
+    const room = await this.adapter.getRoom(id);
+    if (!worldId) throw new Error('worldId is required');
+    if (!room) {
+      await this.adapter.createRoom({
+        id,
+        name,
+        agentId: this.agentId,
+        source,
+        type,
+        channelId,
+        serverId,
+        worldId,
+        metadata,
+      });
+      this.runtimeLogger.debug(`Room ${id} created successfully.`);
+    }
+  }
+
+  /**
+   * Composes the agent's state by gathering data from enabled providers.
+   * @param message - The message to use as context for state composition
+   * @param filterList - Optional list of provider names to include, filtering out all others
+   * @param onlyInclude - If true, only include providers that are in the includeList, don't get other registered providers
+   * @param skipCache - If true, skip the cache and get the latest data from the providers
+   * @returns A State object containing provider data, values, and text
+   */
+  async composeState(
+    message: Memory,
+    includeList: string[] | null = null, // include providers that are private, dynamic or otherwise not included by default
+    onlyInclude = false,
+    skipCache = false
+  ): Promise<State> {
+    const filterList = onlyInclude ? includeList : null;
+    return this.startSpan('AgentRuntime.composeState', async (span) => {
+      span.setAttributes({
+        'message.id': message.id,
+        'agent.id': this.agentId,
+        filter_list: filterList ? JSON.stringify(filterList) : 'none', // Use 'none' for clarity
+        include_list: includeList ? JSON.stringify(includeList) : 'none', // Use 'none' for clarity
+      });
+      span.addEvent('state_composition_started');
+
+      const emptyObj = {
+        values: {},
+        data: {},
+        text: '',
+      } as State;
+
+      // Get cached state for this message ID first
+      const cachedState = skipCache
+        ? emptyObj
+        : (await this.stateCache.get(message.id)) || emptyObj;
+
+      // Get existing provider names from cache (if any)
+      const existingProviderNames = cachedState.data.providers
+        ? Object.keys(cachedState.data.providers)
+        : [];
+
+      span.setAttributes({
+        cached_state_exists: !!cachedState.data.providers, // More specific check
+        existing_providers_count: existingProviderNames.length,
+        existing_providers: JSON.stringify(existingProviderNames), // Add list of existing providers
+      });
+
+      // Step 1: Determine base set of providers to fetch
+      const providerNames = new Set<string>();
+
+      if (filterList && filterList.length > 0) {
+        // If filter list provided, start with just those providers
+        filterList.forEach((name) => providerNames.add(name));
+      } else {
+        // Otherwise, when onlyInclude is false, fetch all non-private, non-dynamic providers.
+        // This ensures their state is refreshed alongside any includeList providers.
+        this.providers
+          .filter((p) => !p.private && !p.dynamic)
+          .forEach((p) => providerNames.add(p.name));
+      }
+
+      // Step 2: Always add providers from include list
+      if (!filterList && includeList && includeList.length > 0) {
+        includeList.forEach((name) => providerNames.add(name));
+      }
+
+      // Get the actual provider objects and sort by position
+      const providersToGet = Array.from(
+        new Set(this.providers.filter((p) => providerNames.has(p.name)))
+      ).sort((a, b) => (a.position || 0) - (b.position || 0));
+
+      const providerNamesToGet = providersToGet.map((p) => p.name);
+      span.setAttributes({
+        providers_to_get_count: providersToGet.length,
+        providers_to_get: JSON.stringify(providerNamesToGet), // Log names as JSON array
+      });
+      span.addEvent('starting_provider_fetch');
+
+      // Fetch data from selected providers
+      const providerData = await Promise.all(
+        providersToGet.map(async (provider) => {
+          // This creates nested spans for each provider call automatically
+          return this.startSpan(`provider.${provider.name}`, async (providerSpan) => {
+            const start = Date.now();
+            try {
+              const result = await provider.get(this, message, cachedState);
+              const duration = Date.now() - start;
+
+              providerSpan.setAttributes({
+                'provider.name': provider.name,
+                'provider.duration_ms': duration,
+                'result.has_text': !!result.text,
+                'result.values_keys': result.values
+                  ? JSON.stringify(Object.keys(result.values))
+                  : '[]',
+              });
+              providerSpan.addEvent('provider_fetch_complete');
+
+              this.runtimeLogger.debug(`${provider.name} Provider took ${duration}ms to respond`);
+              return {
+                ...result,
+                providerName: provider.name,
+              };
+            } catch (error) {
+              const duration = Date.now() - start;
+              const errorMessage = error instanceof Error ? error.message : String(error);
+              providerSpan.recordException(error as Error);
+              providerSpan.setStatus({ code: SpanStatusCode.ERROR, message: errorMessage });
+              providerSpan.setAttributes({
+                'provider.name': provider.name,
+                'provider.duration_ms': duration,
+                'error.message': errorMessage,
+              });
+              providerSpan.addEvent('provider_fetch_error');
+
+              // Return empty result on error
+              return { values: {}, text: '', data: {}, providerName: provider.name }; // ensure data is also present
+            }
+          });
+        })
+      );
+
+      // This map will store the full result object for each provider,
+      // combining cached data with freshly fetched data.
+      // Assumes cachedState.data.providers stores { providerName: { text, values, data, providerName }, ... }
+      const currentProviderResults = { ...(cachedState.data?.providers || {}) };
+
+      // Update the map with the full results from newly fetched providerData
+      for (const freshResult of providerData) {
+        // freshResult is { text, values, data, providerName }
+        currentProviderResults[freshResult.providerName] = freshResult;
+      }
+
+      // Aggregate text from all providers in their intended order.
+      // providersToGet is already sorted by position and contains all providers for the current state composition.
+      const orderedTexts: string[] = [];
+      for (const provider of providersToGet) {
+        const result = currentProviderResults[provider.name];
+        if (result && result.text && result.text.trim() !== '') {
+          orderedTexts.push(result.text);
+        }
+      }
+      const providersText = orderedTexts.join('\n');
+
+      // Aggregate values from all providers for newState.values.
+      // Start with any general non-provider values from the cache.
+      const aggregatedStateValues = { ...(cachedState.values || {}) };
+      // Merge .values from each provider result in currentProviderResults
+      // Iterate based on providersToGet to maintain a semblance of order if keys in aggregatedStateValues overlap, though Object.assign behavior for overlap is last-in wins.
+      for (const provider of providersToGet) {
+        const providerResult = currentProviderResults[provider.name];
+        if (providerResult && providerResult.values && typeof providerResult.values === 'object') {
+          Object.assign(aggregatedStateValues, providerResult.values);
+        }
+      }
+      // Ensure any providers in currentProviderResults not in providersToGet (e.g. from cache, if logic allowed) also contribute their values
+      for (const providerName in currentProviderResults) {
+        if (!providersToGet.some((p) => p.name === providerName)) {
+          const providerResult = currentProviderResults[providerName];
+          if (
+            providerResult &&
+            providerResult.values &&
+            typeof providerResult.values === 'object'
+          ) {
+            Object.assign(aggregatedStateValues, providerResult.values);
+          }
+        }
+      }
+
+      // Assemble and cache the new state
+      const newState = {
+        values: {
+          ...aggregatedStateValues,
+          providers: providersText, // The aggregated text string
+        },
+        data: {
+          ...(cachedState.data || {}), // Preserve other top-level data from cache
+          providers: currentProviderResults, // Store the map of full provider results
+        },
+        text: providersText, // The main textual representation of the state
+      } as State;
+
+      // Cache the result for future use
+      this.stateCache.set(message.id, newState);
+
+      const finalProviderCount = Object.keys(currentProviderResults).length;
+      const finalProviderNames = Object.keys(currentProviderResults);
+      const finalValueKeys = Object.keys(newState.values); // Get keys from the merged state values
+
+      span.setAttributes({
+        // Remove original/redundant attributes
+        // 'final_state_text_length': providersText.length,
+        // 'provider_count_final': finalProviderCount,
+        // 'provider_names_final': JSON.stringify(finalProviderNames),
+
+        // Context-specific attributes
+        'context.sources.provider_count': finalProviderCount,
+        'context.sources.provider_names': JSON.stringify(finalProviderNames),
+        'context.state.value_keys': JSON.stringify(finalValueKeys),
+        'context.state.text_length': providersText.length,
+        // Flags for common providers
+        'context.sources.used_memory': finalProviderNames.includes('RECENT_MESSAGES'),
+        'context.sources.used_knowledge': finalProviderNames.includes('KNOWLEDGE'),
+        'context.sources.used_character': finalProviderNames.includes('CHARACTER'),
+        'context.sources.used_actions': finalProviderNames.includes('ACTIONS'),
+        'context.sources.used_facts': finalProviderNames.includes('FACTS'), // Example, adjust if needed
+      });
+
+      // Log final text as event, using updated event name
+      span.addEvent('context.composed', {
+        'context.final_string':
+          providersText.length > 1000 ? providersText.substring(0, 997) + '...' : providersText, // Truncate if needed
+        'context.final_length': providersText.length,
+      });
+      span.addEvent('state_composition_complete');
+
+      return newState;
+    });
+  }
+
+  getService<T extends Service>(service: ServiceTypeName): T | null {
+    const serviceInstance = this.services.get(service);
+    if (!serviceInstance) {
+      // it's not a warn, a plugin might just not be installed
+      this.runtimeLogger.debug(`Service ${service} not found`);
+      return null;
+    }
+    return serviceInstance as T;
+  }
+
+  async registerService(service: typeof Service): Promise<void> {
+    return this.startSpan('AgentRuntime.registerService', async (span) => {
+      const serviceType = service.serviceType as ServiceTypeName;
+      span.setAttributes({
+        'service.type': serviceType || 'unknown',
+        'agent.id': this.agentId,
+      });
+
+      if (!serviceType) {
+        span.addEvent('service_missing_type');
+        return;
+      }
+      this.runtimeLogger.debug(
+        `${this.character.name}(${this.agentId}) - Registering service:`,
+        serviceType
+      );
+
+      if (this.services.has(serviceType)) {
+        span.addEvent('service_already_registered');
+        this.runtimeLogger.warn(
+          `${this.character.name}(${this.agentId}) - Service ${serviceType} is already registered. Skipping registration.`
+        );
+        return;
+      }
+
+      try {
+        span.addEvent('starting_service');
+        const serviceInstance = await service.start(this);
+
+        // Add the service to the services map
+        this.services.set(serviceType, serviceInstance);
+
+        // --- NEW: Check for and call static send handler registration ---
+        if (typeof (service as any).registerSendHandlers === 'function') {
+          (service as any).registerSendHandlers(this, serviceInstance);
+        }
+        // --- END NEW ---
+
+        span.addEvent('service_registered');
+        this.runtimeLogger.debug(
+          `${this.character.name}(${this.agentId}) - Service ${serviceType} registered successfully`
+        );
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        span.recordException(error as Error);
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: errorMessage,
+        });
+        this.runtimeLogger.error(
+          `${this.character.name}(${this.agentId}) - Failed to register service ${serviceType}: ${errorMessage}`
+        );
+        throw error;
+      }
+    });
+  }
+
+  registerModel(
+    modelType: ModelTypeName,
+    handler: (params: any) => Promise<any>,
+    provider: string,
+    priority?: number
+  ) {
+    const modelKey = typeof modelType === 'string' ? modelType : ModelType[modelType];
+    if (!this.models.has(modelKey)) {
+      this.models.set(modelKey, []);
+    }
+
+    const registrationOrder = Date.now(); // Use a timestamp as a unique registration order
+    this.models.get(modelKey)?.push({
+      handler,
+      provider,
+      priority: priority || 0,
+      registrationOrder,
+    });
+    // Sort by priority (highest first), then by registration order (earliest first)
+    this.models.get(modelKey)?.sort((a, b) => {
+      if ((b.priority || 0) !== (a.priority || 0)) {
+        return (b.priority || 0) - (a.priority || 0);
+      }
+      return a.registrationOrder - b.registrationOrder;
+    });
+  }
+
+  getModel(
+    modelType: ModelTypeName,
+    provider?: string
+  ): ((runtime: IAgentRuntime, params: any) => Promise<any>) | undefined {
+    const modelKey = typeof modelType === 'string' ? modelType : ModelType[modelType];
+    const models = this.models.get(modelKey);
+    if (!models?.length) {
+      return undefined;
+    }
+
+    // Find model by provider if specified
+    if (provider) {
+      const modelWithProvider = models.find((m) => m.provider === provider);
+      if (modelWithProvider) {
+        this.runtimeLogger.debug(
+          `[AgentRuntime][${this.character.name}] Using model ${modelKey} from provider ${provider}`
+        );
+        return modelWithProvider.handler;
+      } else {
+        this.runtimeLogger.warn(
+          `[AgentRuntime][${this.character.name}] No model found for provider ${provider}`
+        );
+      }
+    }
+
+    // Return highest priority handler (first in array after sorting)
+    this.runtimeLogger.debug(
+      `[AgentRuntime][${this.character.name}] Using model ${modelKey} from provider ${models[0].provider}`
+    );
+    return models[0].handler;
+  }
+
+  /**
+   * Use a model with strongly typed parameters and return values based on model type
+   * @template T - The model type to use
+   * @template R - The expected return type, defaults to the type defined in ModelResultMap[T]
+   * @param {T} modelType - The type of model to use
+   * @param {ModelParamsMap[T] | any} params - The parameters for the model, typed based on model type
+   * @returns {Promise<R>} - The model result, typed based on the provided generic type parameter
+   */
+  async useModel<T extends ModelTypeName, R = ModelResultMap[T]>(
+    modelType: T,
+    params: Omit<ModelParamsMap[T], 'runtime'> | any,
+    provider?: string
+  ): Promise<R> {
+    // Use modelType directly in span name for better granularity
+    return this.startSpan(`AgentRuntime.useModel.${modelType}`, async (span) => {
+      const modelKey = typeof modelType === 'string' ? modelType : ModelType[modelType];
+
+      // Try to extract prompt content from params (common patterns)
+      const promptContent =
+        params?.prompt ||
+        params?.input ||
+        (Array.isArray(params?.messages) ? JSON.stringify(params.messages) : null);
+
+      // Add essential attributes and params/prompt as events
+      span.setAttributes({
+        'llm.request.model': modelKey, // Semantic convention
+        'agent.id': this.agentId,
+        'llm.request.temperature': params?.temperature,
+        'llm.request.top_p': params?.top_p,
+        'llm.request.max_tokens': params?.max_tokens || params?.max_tokens_to_sample, // Handle variations
+      });
+      span.addEvent('model_parameters', { params: JSON.stringify(params, safeReplacer()) }); // Log full params
+      if (promptContent) {
+        span.addEvent('llm.prompt', { 'prompt.content': promptContent }); // Log extracted prompt
+      }
+      // Note: Logging raw API response is not feasible here as the call happens within the model handler.
+
+      const model = this.getModel(modelKey, provider);
+      if (!model) {
+        const errorMsg = `No handler found for delegate type: ${modelKey}`;
+        span.setStatus({ code: SpanStatusCode.ERROR, message: errorMsg });
+        throw new Error(errorMsg);
+      }
+
+      // Log input parameters (keep debug log if useful)
+      this.runtimeLogger.debug(
+        `[useModel] ${modelKey} input:`,
+        JSON.stringify(params, safeReplacer(), 2).replace(/\\n/g, '\n')
+      );
+
+      // Handle different parameter formats
+      let paramsWithRuntime: any;
+
+      // If params is a simple value (string, number, etc.), pass it directly
+      if (
+        params === null ||
+        params === undefined ||
+        typeof params !== 'object' ||
+        Array.isArray(params) ||
+        (typeof Buffer !== 'undefined' && Buffer.isBuffer(params))
+      ) {
+        paramsWithRuntime = params;
+      } else {
+        // Otherwise inject the runtime
+        paramsWithRuntime = {
+          ...params,
+          runtime: this,
+        };
+      }
+
+      // Start timer
+      const startTime = performance.now();
+      span.addEvent('model_execution_start');
+
+      try {
+        // Call the model
+        const response = await model(this, paramsWithRuntime);
+
+        // Calculate elapsed time
+        const elapsedTime = performance.now() - startTime;
+        span.setAttributes({
+          'llm.duration_ms': elapsedTime, // Consider llm.duration semantic convention
+          // Attempt to extract token counts if response structure is known/standardized
+          // Example (adjust based on actual response structure):
+          'llm.usage.prompt_tokens': (response as any)?.usage?.prompt_tokens,
+          'llm.usage.completion_tokens': (response as any)?.usage?.completion_tokens,
+          'llm.usage.total_tokens': (response as any)?.usage?.total_tokens,
+        });
+
+        // Log response as event
+        span.addEvent('model_response', { response: JSON.stringify(response, safeReplacer()) }); // Log processed response
+
+        // Log timing (keep debug log if useful)
+        this.runtimeLogger.debug(
+          `[useModel] ${modelKey} completed in ${Number(elapsedTime.toFixed(2)).toLocaleString()}ms`
+        );
+
+        // Log response (keep debug log if useful)
+        this.runtimeLogger.debug(
+          `[useModel] ${modelKey} output:`,
+          Array.isArray(response)
+            ? `${JSON.stringify(response.slice(0, 5))}...${JSON.stringify(response.slice(-5))} (${
+                response.length
+              } items)`
+            : JSON.stringify(response)
+        );
+
+        // Log the model usage (keep adapter log if useful)
+        this.adapter.log({
+          entityId: this.agentId,
+          roomId: this.agentId,
+          body: {
+            modelType,
+            modelKey,
+            params: params
+              ? typeof params === 'object'
+                ? Object.keys(params)
+                : typeof params
+              : null,
+            response:
+              Array.isArray(response) && response.every((x) => typeof x === 'number')
+                ? '[array]'
+                : response,
+          },
+          type: `useModel:${modelKey}`,
+        });
+
+        span.addEvent('model_execution_complete');
+        span.setStatus({ code: SpanStatusCode.OK }); // Explicitly set OK status
+        return response as R;
+      } catch (error) {
+        // Calculate time to error
+        const errorTime = performance.now() - startTime;
+
+        // Record error details
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        span.recordException(error as Error);
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: errorMessage,
+        });
+        span.setAttributes({
+          'error.time_ms': errorTime,
+          'error.message': errorMessage,
+        });
+        span.addEvent('model_execution_error'); // Add specific error event
+
+        // Rethrow the error
+        throw error;
+      }
+    });
+  }
+
+  registerEvent(event: string, handler: (params: any) => Promise<void>) {
+    // --- Reverted: Original simple registration logic ---
+    if (!this.events.has(event)) {
+      this.events.set(event, []);
+    }
+    this.events.get(event)?.push(handler);
+  }
+
+  getEvent(event: string): ((params: any) => Promise<void>)[] | undefined {
+    return this.events.get(event);
+  }
+
+  async emitEvent(event: string | string[], params: any) {
+    const events = Array.isArray(event) ? event : [event];
+
+    for (const eventName of events) {
+      const isMessageReceivedEvent = eventName === EventType.MESSAGE_RECEIVED;
+      const instrumentationEnabled = this.instrumentationService?.isEnabled?.() && this.tracer;
+      const eventHandlers = this.events.get(eventName);
+
+      if (!eventHandlers) {
+        continue; // No handlers for this event
+      }
+
+      if (isMessageReceivedEvent && instrumentationEnabled) {
+        // --- Instrument with startSpan + context.with ---
+        const message = (params as MessagePayload)?.message;
+        const rootSpan = this.tracer.startSpan('AgentRuntime.handleMessageEvent', {
+          attributes: {
+            'agent.id': this.agentId,
+            'character.name': this.character?.name,
+            'room.id': message?.roomId || 'unknown',
+            'user.id': message?.entityId || 'unknown',
+            'message.id': message?.id || 'unknown',
+            'event.name': eventName,
+          },
+        });
+
+        // Create a new context with the rootSpan as active
+        const spanContext = trace.setSpan(context.active(), rootSpan);
 
         try {
-            // Check if directory exists
-            const dirExists = existsSync(dirPath);
-            if (!dirExists) {
-                elizaLogger.error(
-                    `[RAG Directory] Directory does not exist: ${sanitizedDir}`,
-                );
-                return;
-            }
-
-            elizaLogger.debug(`[RAG Directory] Searching in: ${dirPath}`);
-            // Use glob to find all matching files in directory
-            const files = await glob("**/*.{md,txt,pdf}", {
-                cwd: dirPath,
-                nodir: true,
-                absolute: false,
-            });
-
-            if (files.length === 0) {
-                elizaLogger.warn(
-                    `No matching files found in directory: ${dirConfig.directory}`,
-                );
-                return;
-            }
-
-            elizaLogger.info(
-                `[RAG Directory] Found ${files.length} files in ${dirConfig.directory}`,
+          rootSpan.addEvent('processing_started');
+          // Execute handlers within the new context
+          await context.with(spanContext, async () => {
+            await Promise.all(
+              eventHandlers.map((handler) => {
+                // Explicitly capture the active context for each handler
+                const ctx = context.active();
+                return context.with(ctx, () => handler(params));
+              })
             );
-
-            // Process files in batches to avoid memory issues
-            const BATCH_SIZE = 5;
-            for (let i = 0; i < files.length; i += BATCH_SIZE) {
-                const batch = files.slice(i, i + BATCH_SIZE);
-
-                await Promise.all(
-                    batch.map(async (file) => {
-                        try {
-                            const relativePath = join(sanitizedDir, file);
-
-                            elizaLogger.debug(
-                                `[RAG Directory] Processing file ${i + 1}/${files.length}:`,
-                                {
-                                    file,
-                                    relativePath,
-                                    shared: dirConfig.shared,
-                                },
-                            );
-
-                            await this.processCharacterRAGKnowledge([
-                                {
-                                    path: relativePath,
-                                    shared: dirConfig.shared,
-                                },
-                            ]);
-                        } catch (error) {
-                            elizaLogger.error(
-                                `[RAG Directory] Failed to process file: ${file}`,
-                                error instanceof Error
-                                    ? {
-                                          name: error.name,
-                                          message: error.message,
-                                          stack: error.stack,
-                                      }
-                                    : error,
-                            );
-                        }
-                    }),
-                );
-
-                elizaLogger.debug(
-                    `[RAG Directory] Completed batch ${Math.min(i + BATCH_SIZE, files.length)}/${files.length} files`,
-                );
-            }
-
-            elizaLogger.success(
-                `[RAG Directory] Successfully processed directory: ${sanitizedDir}`,
-            );
+          });
+          rootSpan.setStatus({ code: SpanStatusCode.OK });
         } catch (error) {
-            elizaLogger.error(
-                `[RAG Directory] Failed to process directory: ${sanitizedDir}`,
-                error instanceof Error
-                    ? {
-                          name: error.name,
-                          message: error.message,
-                          stack: error.stack,
-                      }
-                    : error,
-            );
-            throw error; // Re-throw to let caller handle it
+          this.runtimeLogger.error(
+            `Error during instrumented handler execution for event ${eventName}:`,
+            error
+          );
+          rootSpan.recordException(error as Error);
+          rootSpan.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message });
+          // throw error; // Re-throw if needed
+        } finally {
+          rootSpan.addEvent('processing_ended');
+          rootSpan.end();
         }
-    }
-
-    getSetting(key: string) {
-        // check if the key is in the character.settings.secrets object
-        if (this.character.settings?.secrets?.[key]) {
-            return this.character.settings.secrets[key];
+        // --- End Instrumentation ---
+      } else {
+        // --- No Instrumentation: Execute directly ---
+        try {
+          await Promise.all(eventHandlers.map((handler) => handler(params)));
+        } catch (error) {
+          this.runtimeLogger.error(
+            `Error during emitEvent for ${eventName} (handler execution):`,
+            error
+          );
+          // throw error; // Re-throw if necessary
         }
-        // if not, check if it's in the settings object
-        if (this.character.settings?.[key]) {
-            return this.character.settings[key];
-        }
+      }
+    }
+  }
 
-        // if not, check if it's in the settings object
-        if (settings[key]) {
-            return settings[key];
-        }
+  async ensureEmbeddingDimension() {
+    this.runtimeLogger.debug(
+      `[AgentRuntime][${this.character.name}] Starting ensureEmbeddingDimension`
+    );
 
-        return null;
+    if (!this.adapter) {
+      throw new Error(
+        `[AgentRuntime][${this.character.name}] Database adapter not initialized before ensureEmbeddingDimension`
+      );
     }
 
-    /**
-     * Get the number of messages that are kept in the conversation buffer.
-     * @returns The number of recent messages to be kept in memory.
-     */
-    getConversationLength() {
-        return this.#conversationLength;
-    }
-
-    /**
-     * Register an action for the agent to perform.
-     * @param action The action to register.
-     */
-    registerAction(action: Action) {
-        elizaLogger.success(`${this.character.name}(${this.agentId}) - Registering action: ${action.name}`);
-        this.actions.push(action);
-    }
-
-    /**
-     * Register an evaluator to assess and guide the agent's responses.
-     * @param evaluator The evaluator to register.
-     */
-    registerEvaluator(evaluator: Evaluator) {
-        this.evaluators.push(evaluator);
-    }
-
-    /**
-     * Register a context provider to provide context for message generation.
-     * @param provider The context provider to register.
-     */
-    registerContextProvider(provider: Provider) {
-        this.providers.push(provider);
-    }
-
-    /**
-     * Register an adapter for the agent to use.
-     * @param adapter The adapter to register.
-     */
-    registerAdapter(adapter: Adapter) {
-        this.adapters.push(adapter);
-    }
-
-    /**
-     * Process the actions of a message.
-     * @param message The message to process.
-     * @param content The content of the message to process actions from.
-     */
-    async processActions(
-        message: Memory,
-        responses: Memory[],
-        state?: State,
-        callback?: HandlerCallback,
-    ): Promise<void> {
-        for (const response of responses) {
-            if (!response.content?.action) {
-                elizaLogger.warn("No action found in the response content.");
-                continue;
-            }
-
-            const normalizedAction = response.content.action
-                .toLowerCase()
-                .replace("_", "");
-
-            elizaLogger.success(`Normalized action: ${normalizedAction}`);
-
-            let action = this.actions.find(
-                (a: { name: string }) =>
-                    a.name
-                        .toLowerCase()
-                        .replace("_", "")
-                        .includes(normalizedAction) ||
-                    normalizedAction.includes(
-                        a.name.toLowerCase().replace("_", ""),
-                    ),
-            );
-
-            if (!action) {
-                elizaLogger.info("Attempting to find action in similes.");
-                for (const _action of this.actions) {
-                    const simileAction = _action.similes.find(
-                        (simile) =>
-                            simile
-                                .toLowerCase()
-                                .replace("_", "")
-                                .includes(normalizedAction) ||
-                            normalizedAction.includes(
-                                simile.toLowerCase().replace("_", ""),
-                            ),
-                    );
-                    if (simileAction) {
-                        action = _action;
-                        elizaLogger.success(
-                            `Action found in similes: ${action.name}`,
-                        );
-                        break;
-                    }
-                }
-            }
-
-            if (!action) {
-                elizaLogger.error(
-                    "No action found for",
-                    response.content.action,
-                );
-                continue;
-            }
-
-            if (!action.handler) {
-                elizaLogger.error(`Action ${action.name} has no handler.`);
-                continue;
-            }
-
-            try {
-                elizaLogger.info(
-                    `Executing handler for action: ${action.name}`,
-                );
-                await action.handler(this, message, state, {}, callback);
-            } catch (error) {
-                elizaLogger.error(error);
-            }
-        }
-    }
-
-    /**
-     * Evaluate the message and state using the registered evaluators.
-     * @param message The message to evaluate.
-     * @param state The state of the agent.
-     * @param didRespond Whether the agent responded to the message.~
-     * @param callback The handler callback
-     * @returns The results of the evaluation.
-     */
-    async evaluate(
-        message: Memory,
-        state: State,
-        didRespond?: boolean,
-        callback?: HandlerCallback,
-    ) {
-        const evaluatorPromises = this.evaluators.map(
-            async (evaluator: Evaluator) => {
-                elizaLogger.log("Evaluating", evaluator.name);
-                if (!evaluator.handler) {
-                    return null;
-                }
-                if (!didRespond && !evaluator.alwaysRun) {
-                    return null;
-                }
-                const result = await evaluator.validate(this, message, state);
-                if (result) {
-                    return evaluator;
-                }
-                return null;
-            },
+    try {
+      const model = this.getModel(ModelType.TEXT_EMBEDDING);
+      if (!model) {
+        throw new Error(
+          `[AgentRuntime][${this.character.name}] No TEXT_EMBEDDING model registered`
         );
+      }
 
-        const resolvedEvaluators = await Promise.all(evaluatorPromises);
-        const evaluatorsData = resolvedEvaluators.filter(
-            (evaluator): evaluator is Evaluator => evaluator !== null,
+      this.runtimeLogger.debug(
+        `[AgentRuntime][${this.character.name}] Getting embedding dimensions`
+      );
+      const embedding = await this.useModel(ModelType.TEXT_EMBEDDING, null);
+
+      if (!embedding || !embedding.length) {
+        throw new Error(`[AgentRuntime][${this.character.name}] Invalid embedding received`);
+      }
+
+      this.runtimeLogger.debug(
+        `[AgentRuntime][${this.character.name}] Setting embedding dimension: ${embedding.length}`
+      );
+      await this.adapter.ensureEmbeddingDimension(embedding.length);
+      this.runtimeLogger.debug(
+        `[AgentRuntime][${this.character.name}] Successfully set embedding dimension`
+      );
+    } catch (error) {
+      this.runtimeLogger.debug(
+        `[AgentRuntime][${this.character.name}] Error in ensureEmbeddingDimension:`,
+        error
+      );
+      throw error;
+    }
+  }
+
+  registerTaskWorker(taskHandler: TaskWorker): void {
+    if (this.taskWorkers.has(taskHandler.name)) {
+      this.runtimeLogger.warn(
+        `Task definition ${taskHandler.name} already registered. Will be overwritten.`
+      );
+    }
+    this.taskWorkers.set(taskHandler.name, taskHandler);
+  }
+
+  /**
+   * Get a task worker by name
+   */
+  getTaskWorker(name: string): TaskWorker | undefined {
+    return this.taskWorkers.get(name);
+  }
+
+  // Implement database adapter methods
+
+  get db(): any {
+    return this.adapter.db;
+  }
+
+  async init(): Promise<void> {
+    await this.adapter.init();
+  }
+
+  async close(): Promise<void> {
+    await this.adapter.close();
+  }
+
+  async getAgent(agentId: UUID): Promise<Agent | null> {
+    return await this.adapter.getAgent(agentId);
+  }
+
+  async getAgents(): Promise<Partial<Agent>[]> {
+    return await this.adapter.getAgents();
+  }
+
+  async createAgent(agent: Partial<Agent>): Promise<boolean> {
+    return await this.adapter.createAgent(agent);
+  }
+
+  async updateAgent(agentId: UUID, agent: Partial<Agent>): Promise<boolean> {
+    return await this.adapter.updateAgent(agentId, agent);
+  }
+
+  async deleteAgent(agentId: UUID): Promise<boolean> {
+    return await this.adapter.deleteAgent(agentId);
+  }
+
+  async ensureAgentExists(agent: Partial<Agent>): Promise<Agent> {
+    return await this.adapter.ensureAgentExists(agent);
+  }
+
+  async getEntityById(entityId: UUID): Promise<Entity | null> {
+    return await this.adapter.getEntityById(entityId);
+  }
+
+  async getEntitiesForRoom(roomId: UUID, includeComponents?: boolean): Promise<Entity[]> {
+    return await this.adapter.getEntitiesForRoom(roomId, includeComponents);
+  }
+
+  async createEntity(entity: Entity): Promise<boolean> {
+    if (!entity.agentId) {
+      entity.agentId = this.agentId;
+    }
+    return await this.adapter.createEntity(entity);
+  }
+
+  async updateEntity(entity: Entity): Promise<void> {
+    await this.adapter.updateEntity(entity);
+  }
+
+  async getComponent(
+    entityId: UUID,
+    type: string,
+    worldId?: UUID,
+    sourceEntityId?: UUID
+  ): Promise<Component | null> {
+    return await this.adapter.getComponent(entityId, type, worldId, sourceEntityId);
+  }
+
+  async getComponents(entityId: UUID, worldId?: UUID, sourceEntityId?: UUID): Promise<Component[]> {
+    return await this.adapter.getComponents(entityId, worldId, sourceEntityId);
+  }
+
+  async createComponent(component: Component): Promise<boolean> {
+    return await this.adapter.createComponent(component);
+  }
+
+  async updateComponent(component: Component): Promise<void> {
+    await this.adapter.updateComponent(component);
+  }
+
+  async deleteComponent(componentId: UUID): Promise<void> {
+    await this.adapter.deleteComponent(componentId);
+  }
+
+  async addEmbeddingToMemory(memory: Memory): Promise<Memory> {
+    // Return early if embedding already exists
+    if (memory.embedding) {
+      return memory;
+    }
+
+    const memoryText = memory.content.text;
+
+    // Validate memory has text content
+    if (!memoryText) {
+      throw new Error('Cannot generate embedding: Memory content is empty');
+    }
+
+    try {
+      // Generate embedding from text content
+      memory.embedding = await this.useModel(ModelType.TEXT_EMBEDDING, {
+        text: memoryText,
+      });
+    } catch (error) {
+      logger.error('Failed to generate embedding:', error);
+      // Fallback to zero vector if embedding fails
+      memory.embedding = await this.useModel(ModelType.TEXT_EMBEDDING, null);
+    }
+
+    return memory;
+  }
+
+  async getMemories(params: {
+    entityId?: UUID;
+    agentId?: UUID;
+    roomId?: UUID;
+    count?: number;
+    unique?: boolean;
+    tableName: string;
+    start?: number;
+    end?: number;
+  }): Promise<Memory[]> {
+    return await this.adapter.getMemories(params);
+  }
+
+  async getMemoryById(id: UUID): Promise<Memory | null> {
+    return await this.adapter.getMemoryById(id);
+  }
+
+  async getMemoriesByIds(ids: UUID[], tableName?: string): Promise<Memory[]> {
+    return await this.adapter.getMemoriesByIds(ids, tableName);
+  }
+
+  async getMemoriesByRoomIds(params: {
+    tableName: string;
+    roomIds: UUID[];
+    limit?: number;
+  }): Promise<Memory[]> {
+    return await this.adapter.getMemoriesByRoomIds(params);
+  }
+
+  async getCachedEmbeddings(params: {
+    query_table_name: string;
+    query_threshold: number;
+    query_input: string;
+    query_field_name: string;
+    query_field_sub_name: string;
+    query_match_count: number;
+  }): Promise<{ embedding: number[]; levenshtein_score: number }[]> {
+    return await this.adapter.getCachedEmbeddings(params);
+  }
+
+  async log(params: {
+    body: { [key: string]: unknown };
+    entityId: UUID;
+    roomId: UUID;
+    type: string;
+  }): Promise<void> {
+    await this.adapter.log(params);
+  }
+
+  async searchMemories(params: {
+    embedding: number[];
+    query?: string;
+    match_threshold?: number;
+    count?: number;
+    roomId?: UUID;
+    unique?: boolean;
+    worldId?: UUID;
+    entityId?: UUID;
+    tableName: string;
+  }): Promise<Memory[]> {
+    const memories = await this.adapter.searchMemories(params);
+    if (params.query) {
+      const rerankedMemories = await this.rerankMemories(params.query, memories);
+      return rerankedMemories;
+    }
+    return memories;
+  }
+
+  async rerankMemories(query: string, memories: Memory[]): Promise<Memory[]> {
+    const docs = memories.map((memory) => ({
+      title: memory.id,
+      content: memory.content.text,
+    }));
+
+    // Create a new BM25 instance
+    const bm25 = new BM25(docs);
+
+    // Get search results
+    const results = bm25.search(query, memories.length);
+
+    return results.map((result) => memories[result.index]);
+  }
+
+  async createMemory(memory: Memory, tableName: string, unique?: boolean): Promise<UUID> {
+    return await this.adapter.createMemory(memory, tableName, unique);
+  }
+
+  async updateMemory(
+    memory: Partial<Memory> & { id: UUID; metadata?: MemoryMetadata }
+  ): Promise<boolean> {
+    return await this.adapter.updateMemory(memory);
+  }
+
+  async deleteMemory(memoryId: UUID): Promise<void> {
+    await this.adapter.deleteMemory(memoryId);
+  }
+
+  async deleteAllMemories(roomId: UUID, tableName: string): Promise<void> {
+    await this.adapter.deleteAllMemories(roomId, tableName);
+  }
+
+  async countMemories(roomId: UUID, unique?: boolean, tableName?: string): Promise<number> {
+    return await this.adapter.countMemories(roomId, unique, tableName);
+  }
+
+  async getLogs(params: {
+    entityId: UUID;
+    roomId?: UUID;
+    type?: string;
+    count?: number;
+    offset?: number;
+  }): Promise<Log[]> {
+    return await this.adapter.getLogs(params);
+  }
+
+  async deleteLog(logId: UUID): Promise<void> {
+    await this.adapter.deleteLog(logId);
+  }
+
+  async createWorld(world: World): Promise<UUID> {
+    return await this.adapter.createWorld(world);
+  }
+
+  async getWorld(id: UUID): Promise<World | null> {
+    return await this.adapter.getWorld(id);
+  }
+
+  async removeWorld(worldId: UUID): Promise<void> {
+    await this.adapter.removeWorld(worldId);
+  }
+
+  async getAllWorlds(): Promise<World[]> {
+    return await this.adapter.getAllWorlds();
+  }
+
+  async updateWorld(world: World): Promise<void> {
+    await this.adapter.updateWorld(world);
+  }
+
+  async getRoom(roomId: UUID): Promise<Room | null> {
+    return await this.adapter.getRoom(roomId);
+  }
+
+  async createRoom({ id, name, source, type, channelId, serverId, worldId }: Room): Promise<UUID> {
+    if (!worldId) throw new Error('worldId is required');
+    return await this.adapter.createRoom({
+      id,
+      name,
+      source,
+      type,
+      channelId,
+      serverId,
+      worldId,
+    });
+  }
+
+  async deleteRoom(roomId: UUID): Promise<void> {
+    await this.adapter.deleteRoom(roomId);
+  }
+
+  async deleteRoomsByServerId(serverId: UUID): Promise<void> {
+    await this.adapter.deleteRoomsByServerId(serverId);
+  }
+
+  async updateRoom(room: Room): Promise<void> {
+    await this.adapter.updateRoom(room);
+  }
+
+  async getRoomsForParticipant(entityId: UUID): Promise<UUID[]> {
+    return await this.adapter.getRoomsForParticipant(entityId);
+  }
+
+  async getRoomsForParticipants(userIds: UUID[]): Promise<UUID[]> {
+    return await this.adapter.getRoomsForParticipants(userIds);
+  }
+
+  async getRooms(worldId: UUID): Promise<Room[]> {
+    return await this.adapter.getRooms(worldId);
+  }
+
+  async getParticipantUserState(
+    roomId: UUID,
+    entityId: UUID
+  ): Promise<'FOLLOWED' | 'MUTED' | null> {
+    return await this.adapter.getParticipantUserState(roomId, entityId);
+  }
+
+  async setParticipantUserState(
+    roomId: UUID,
+    entityId: UUID,
+    state: 'FOLLOWED' | 'MUTED' | null
+  ): Promise<void> {
+    await this.adapter.setParticipantUserState(roomId, entityId, state);
+  }
+
+  async createRelationship(params: {
+    sourceEntityId: UUID;
+    targetEntityId: UUID;
+    tags?: string[];
+    metadata?: { [key: string]: any };
+  }): Promise<boolean> {
+    return await this.adapter.createRelationship(params);
+  }
+
+  async updateRelationship(relationship: Relationship): Promise<void> {
+    await this.adapter.updateRelationship(relationship);
+  }
+
+  async getRelationship(params: {
+    sourceEntityId: UUID;
+    targetEntityId: UUID;
+  }): Promise<Relationship | null> {
+    return await this.adapter.getRelationship(params);
+  }
+
+  async getRelationships(params: { entityId: UUID; tags?: string[] }): Promise<Relationship[]> {
+    return await this.adapter.getRelationships(params);
+  }
+
+  async getCache<T>(key: string): Promise<T | undefined> {
+    return await this.adapter.getCache<T>(key);
+  }
+
+  async setCache<T>(key: string, value: T): Promise<boolean> {
+    return await this.adapter.setCache<T>(key, value);
+  }
+
+  async deleteCache(key: string): Promise<boolean> {
+    return await this.adapter.deleteCache(key);
+  }
+
+  async createTask(task: Task): Promise<UUID> {
+    return await this.adapter.createTask(task);
+  }
+
+  async getTasks(params: { roomId?: UUID; tags?: string[]; entityId?: UUID }): Promise<Task[]> {
+    return await this.adapter.getTasks(params);
+  }
+
+  async getTask(id: UUID): Promise<Task | null> {
+    return await this.adapter.getTask(id);
+  }
+
+  async getTasksByName(name: string): Promise<Task[]> {
+    return await this.adapter.getTasksByName(name);
+  }
+
+  async updateTask(id: UUID, task: Partial<Task>): Promise<void> {
+    await this.adapter.updateTask(id, task);
+  }
+
+  async deleteTask(id: UUID): Promise<void> {
+    await this.adapter.deleteTask(id);
+  }
+
+  // Event emitter methods
+  on(event: string, callback: (data: any) => void): void {
+    if (!this.eventHandlers.has(event)) {
+      this.eventHandlers.set(event, []);
+    }
+    this.eventHandlers.get(event)!.push(callback);
+  }
+
+  off(event: string, callback: (data: any) => void): void {
+    if (!this.eventHandlers.has(event)) {
+      return;
+    }
+    const handlers = this.eventHandlers.get(event)!;
+    const index = handlers.indexOf(callback);
+    if (index !== -1) {
+      handlers.splice(index, 1);
+    }
+  }
+
+  emit(event: string, data: any): void {
+    if (!this.eventHandlers.has(event)) {
+      return;
+    }
+    for (const handler of this.eventHandlers.get(event)!) {
+      handler(data);
+    }
+  }
+
+  /**
+   * Sends a control message to the frontend to enable or disable input
+   * @param {Object} params - Parameters for the control message
+   * @param {UUID} params.roomId - The ID of the room to send the control message to
+   * @param {'enable_input' | 'disable_input'} params.action - The action to perform
+   * @param {string} [params.target] - Optional target element identifier
+   * @returns {Promise<void>}
+   */
+  async sendControlMessage(params: {
+    roomId: UUID;
+    action: 'enable_input' | 'disable_input';
+    target?: string;
+  }): Promise<void> {
+    try {
+      const { roomId, action, target } = params;
+
+      // Create the control message
+      const controlMessage = {
+        type: 'control',
+        payload: {
+          action,
+          target,
+        },
+        roomId,
+      };
+
+      // Emit an event that can be handled by the websocket service or other handlers
+      await this.emitEvent('CONTROL_MESSAGE', {
+        runtime: this,
+        message: controlMessage,
+        source: 'agent',
+      });
+
+      this.runtimeLogger.debug(`Sent control message: ${action} to room ${roomId}`);
+    } catch (error) {
+      this.runtimeLogger.error(`Error sending control message: ${error}`);
+    }
+  }
+
+  /**
+   * Registers a handler function for sending messages to a specific source.
+   * @param source - The unique identifier for the source.
+   * @param handler - The SendHandlerFunction to register.
+   */
+  registerSendHandler(source: string, handler: SendHandlerFunction): void {
+    if (this.sendHandlers.has(source)) {
+      this.runtimeLogger.warn(
+        `Send handler for source '${source}' already registered. Overwriting.`
+      );
+    }
+    this.sendHandlers.set(source, handler);
+    this.runtimeLogger.info(`Registered send handler for source: ${source}`);
+  }
+
+  /**
+   * Sends a message to a target using the registered handler for the target's source.
+   * @param target - Information about the message target.
+   * @param content - The message content.
+   */
+  async sendMessageToTarget(target: TargetInfo, content: Content): Promise<void> {
+    return this.startSpan('AgentRuntime.sendMessageToTarget', async (span) => {
+      span.setAttributes({
+        'message.target.source': target.source,
+        'message.target.roomId': target.roomId,
+        'message.target.channelId': target.channelId,
+        'message.target.serverId': target.serverId,
+        'message.target.entityId': target.entityId,
+        'message.target.threadId': target.threadId,
+        'agent.id': this.agentId,
+      });
+
+      const handler = this.sendHandlers.get(target.source);
+      if (!handler) {
+        const errorMsg = `No send handler registered for source: ${target.source}`;
+        span.setStatus({ code: SpanStatusCode.ERROR, message: errorMsg });
+        this.runtimeLogger.error(errorMsg);
+        // Optionally throw or just log the error
+        throw new Error(errorMsg);
+      }
+
+      try {
+        span.addEvent('executing_send_handler');
+        await handler(this, target, content);
+        span.addEvent('send_handler_executed');
+        span.setStatus({ code: SpanStatusCode.OK });
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        span.recordException(error as Error);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: errorMsg });
+        this.runtimeLogger.error(
+          `Error executing send handler for source ${target.source}:`,
+          error
         );
-
-        // if there are no evaluators this frame, return
-        if (!evaluatorsData || evaluatorsData.length === 0) {
-            return [];
-        }
-
-        const context = composeContext({
-            state: {
-                ...state,
-                evaluators: formatEvaluators(evaluatorsData),
-                evaluatorNames: formatEvaluatorNames(evaluatorsData),
-            },
-            template:
-                this.character.templates?.evaluationTemplate ||
-                evaluationTemplate,
-        });
-
-        const result = await generateText({
-            runtime: this,
-            context,
-            modelClass: ModelClass.SMALL,
-            // verifiableInferenceAdapter: this.verifiableInferenceAdapter,
-        });
-
-        const evaluators = parseJsonArrayFromText(
-            result,
-        ) as unknown as string[];
-
-        for (const evaluator of this.evaluators) {
-            if (!evaluators?.includes(evaluator.name)) continue;
-
-            if (evaluator.handler)
-                await evaluator.handler(this, message, state, {}, callback);
-        }
-
-        return evaluators;
-    }
-
-    /**
-     * Ensure the existence of a participant in the room. If the participant does not exist, they are added to the room.
-     * @param userId - The user ID to ensure the existence of.
-     * @throws An error if the participant cannot be added.
-     */
-    async ensureParticipantExists(userId: UUID, roomId: UUID) {
-        const participants =
-            await this.databaseAdapter.getParticipantsForAccount(userId);
-
-        if (participants?.length === 0) {
-            await this.databaseAdapter.addParticipant(userId, roomId);
-        }
-    }
-
-    /**
-     * Ensure the existence of a user in the database. If the user does not exist, they are added to the database.
-     * @param userId - The user ID to ensure the existence of.
-     * @param userName - The user name to ensure the existence of.
-     * @returns
-     */
-
-    async ensureUserExists(
-        userId: UUID,
-        userName: string | null,
-        name: string | null,
-        email?: string | null,
-        source?: string | null,
-    ) {
-        const account = await this.databaseAdapter.getAccountById(userId);
-        if (!account) {
-            await this.databaseAdapter.createAccount({
-                id: userId,
-                name: name || this.character.name || "Unknown User",
-                username: userName || this.character.username || "Unknown",
-                // TODO: We might not need these account pieces
-                email: email || this.character.email || userId,
-                // When invoke ensureUserExists and saving account.details
-                // Performing a complete JSON.stringify on character will cause a TypeError: Converting circular structure to JSON error in some more complex plugins.
-                details: this.character ? Object.assign({}, this.character, {
-                    source,
-                    plugins: this.character?.plugins?.map((plugin) => plugin.name),
-                }) : { summary: "" },
-            });
-            elizaLogger.success(`User ${userName} created successfully.`);
-        }
-    }
-
-    async ensureParticipantInRoom(userId: UUID, roomId: UUID) {
-        const participants =
-            await this.databaseAdapter.getParticipantsForRoom(roomId);
-        if (!participants.includes(userId)) {
-            await this.databaseAdapter.addParticipant(userId, roomId);
-            if (userId === this.agentId) {
-                elizaLogger.log(
-                    `Agent ${this.character.name} linked to room ${roomId} successfully.`,
-                );
-            } else {
-                elizaLogger.log(
-                    `User ${userId} linked to room ${roomId} successfully.`,
-                );
-            }
-        }
-    }
-
-    async ensureConnection(
-        userId: UUID,
-        roomId: UUID,
-        userName?: string,
-        userScreenName?: string,
-        source?: string,
-    ) {
-        await Promise.all([
-            this.ensureUserExists(
-                this.agentId,
-                this.character.username ?? "Agent",
-                this.character.name ?? "Agent",
-                source,
-            ),
-            this.ensureUserExists(
-                userId,
-                userName ?? "User" + userId,
-                userScreenName ?? "User" + userId,
-                source,
-            ),
-            this.ensureRoomExists(roomId),
-        ]);
-
-        await Promise.all([
-            this.ensureParticipantInRoom(userId, roomId),
-            this.ensureParticipantInRoom(this.agentId, roomId),
-        ]);
-    }
-
-    /**
-     * Ensure the existence of a room between the agent and a user. If no room exists, a new room is created and the user
-     * and agent are added as participants. The room ID is returned.
-     * @param userId - The user ID to create a room with.
-     * @returns The room ID of the room between the agent and the user.
-     * @throws An error if the room cannot be created.
-     */
-    async ensureRoomExists(roomId: UUID) {
-        const room = await this.databaseAdapter.getRoom(roomId);
-        if (!room) {
-            await this.databaseAdapter.createRoom(roomId);
-            elizaLogger.log(`Room ${roomId} created successfully.`);
-        }
-    }
-
-    /**
-     * Compose the state of the agent into an object that can be passed or used for response generation.
-     * @param message The message to compose the state from.
-     * @returns The state of the agent.
-     */
-    async composeState(
-        message: Memory,
-        additionalKeys: { [key: string]: unknown } = {},
-    ) {
-        const { userId, roomId } = message;
-
-        const conversationLength = this.getConversationLength();
-
-        const [actorsData, recentMessagesData, goalsData]: [
-            Actor[],
-            Memory[],
-            Goal[],
-        ] = await Promise.all([
-            getActorDetails({ runtime: this, roomId }),
-            this.messageManager.getMemories({
-                roomId,
-                count: conversationLength,
-                unique: false,
-            }),
-            getGoals({
-                runtime: this,
-                count: 10,
-                onlyInProgress: false,
-                roomId,
-            }),
-        ]);
-
-        const goals = formatGoalsAsString({ goals: goalsData });
-
-        const actors = formatActors({ actors: actorsData ?? [] });
-
-        const recentMessages = formatMessages({
-            messages: recentMessagesData,
-            actors: actorsData,
-        });
-
-        const recentPosts = formatPosts({
-            messages: recentMessagesData,
-            actors: actorsData,
-            conversationHeader: false,
-        });
-
-        // const lore = formatLore(loreData);
-
-        const senderName = actorsData?.find(
-            (actor: Actor) => actor.id === userId,
-        )?.name;
-
-        // TODO: We may wish to consolidate and just accept character.name here instead of the actor name
-        const agentName =
-            actorsData?.find((actor: Actor) => actor.id === this.agentId)
-                ?.name || this.character.name;
-
-        let allAttachments = message.content.attachments || [];
-
-        if (recentMessagesData && Array.isArray(recentMessagesData)) {
-            const lastMessageWithAttachment = recentMessagesData.find(
-                (msg) =>
-                    msg.content.attachments &&
-                    msg.content.attachments.length > 0,
-            );
-
-            if (lastMessageWithAttachment) {
-                const lastMessageTime =
-                    lastMessageWithAttachment?.createdAt ?? Date.now();
-                const oneHourBeforeLastMessage =
-                    lastMessageTime - 60 * 60 * 1000; // 1 hour before last message
-
-                allAttachments = recentMessagesData.reverse().flatMap((msg) => {
-                    const msgTime = msg.createdAt ?? Date.now();
-                    const isWithinTime = msgTime >= oneHourBeforeLastMessage;
-                    const attachments = msg.content.attachments || [];
-                    if (!isWithinTime) {
-                        attachments.forEach((attachment) => {
-                            attachment.text = "[Hidden]";
-                        });
-                    }
-                    return attachments;
-                });
-            }
-        }
-
-        const formattedAttachments = allAttachments
-            .map(
-                (attachment) =>
-                    `ID: ${attachment.id}
-Name: ${attachment.title}
-URL: ${attachment.url}
-Type: ${attachment.source}
-Description: ${attachment.description}
-Text: ${attachment.text}
-  `,
-            )
-            .join("\n");
-
-        // randomly get 3 bits of lore and join them into a paragraph, divided by \n
-        let lore = "";
-        // Assuming this.lore is an array of lore bits
-        if (this.character.lore && this.character.lore.length > 0) {
-            const shuffledLore = [...this.character.lore].sort(
-                () => Math.random() - 0.5,
-            );
-            const selectedLore = shuffledLore.slice(0, 10);
-            lore = selectedLore.join("\n");
-        }
-
-        const formattedCharacterPostExamples = this.character.postExamples
-            .sort(() => 0.5 - Math.random())
-            .map((post) => {
-                const messageString = `${post}`;
-                return messageString;
-            })
-            .slice(0, 50)
-            .join("\n");
-
-        const formattedCharacterMessageExamples = this.character.messageExamples
-            .sort(() => 0.5 - Math.random())
-            .slice(0, 5)
-            .map((example) => {
-                const exampleNames = Array.from({ length: 5 }, () =>
-                    uniqueNamesGenerator({ dictionaries: [names] }),
-                );
-
-                return example
-                    .map((message) => {
-                        let messageString = `${message.user}: ${message.content.text}`;
-                        exampleNames.forEach((name, index) => {
-                            const placeholder = `{{user${index + 1}}}`;
-                            messageString = messageString.replaceAll(
-                                placeholder,
-                                name,
-                            );
-                        });
-                        return messageString;
-                    })
-                    .join("\n");
-            })
-            .join("\n\n");
-
-        const getRecentInteractions = async (
-            userA: UUID,
-            userB: UUID,
-        ): Promise<Memory[]> => {
-            // Find all rooms where userA and userB are participants
-            const rooms = await this.databaseAdapter.getRoomsForParticipants([
-                userA,
-                userB,
-            ]);
-
-            // Check the existing memories in the database
-            return this.messageManager.getMemoriesByRoomIds({
-                // filter out the current room id from rooms
-                roomIds: rooms.filter((room) => room !== roomId),
-                limit: 20,
-            });
-        };
-
-        const recentInteractions =
-            userId !== this.agentId
-                ? await getRecentInteractions(userId, this.agentId)
-                : [];
-
-        const getRecentMessageInteractions = async (
-            recentInteractionsData: Memory[],
-        ): Promise<string> => {
-            // Format the recent messages
-            const formattedInteractions = await Promise.all(
-                recentInteractionsData.map(async (message) => {
-                    const isSelf = message.userId === this.agentId;
-                    let sender: string;
-                    if (isSelf) {
-                        sender = this.character.name;
-                    } else {
-                        const accountId =
-                            await this.databaseAdapter.getAccountById(
-                                message.userId,
-                            );
-                        sender = accountId?.username || "unknown";
-                    }
-                    return `${sender}: ${message.content.text}`;
-                }),
-            );
-
-            return formattedInteractions.join("\n");
-        };
-
-        const formattedMessageInteractions =
-            await getRecentMessageInteractions(recentInteractions);
-
-        const getRecentPostInteractions = async (
-            recentInteractionsData: Memory[],
-            actors: Actor[],
-        ): Promise<string> => {
-            const formattedInteractions = formatPosts({
-                messages: recentInteractionsData,
-                actors,
-                conversationHeader: true,
-            });
-
-            return formattedInteractions;
-        };
-
-        const formattedPostInteractions = await getRecentPostInteractions(
-            recentInteractions,
-            actorsData,
-        );
-
-        // if bio is a string, use it. if its an array, pick one at random
-        let bio = this.character.bio || "";
-        if (Array.isArray(bio)) {
-            // get three random bio strings and join them with " "
-            bio = bio
-                .sort(() => 0.5 - Math.random())
-                .slice(0, 3)
-                .join(" ");
-        }
-
-        let knowledgeData = [];
-        let formattedKnowledge = "";
-
-        if (this.character.settings?.ragKnowledge) {
-            const recentContext = recentMessagesData
-                .sort((a, b) => b.createdAt - a.createdAt) // Sort by timestamp descending (newest first)
-                .slice(0, 3) // Get the 3 most recent messages
-                .reverse() // Reverse to get chronological order
-                .map((msg) => msg.content.text)
-                .join(" ");
-
-            knowledgeData = await this.ragKnowledgeManager.getKnowledge({
-                query: message.content.text,
-                conversationContext: recentContext,
-                limit: 8,
-            });
-
-            formattedKnowledge = formatKnowledge(knowledgeData);
-        } else {
-            knowledgeData = await knowledge.get(this, message);
-
-            formattedKnowledge = formatKnowledge(knowledgeData);
-        }
-
-        const initialState = {
-            agentId: this.agentId,
-            agentName,
-            bio,
-            lore,
-            adjective:
-                this.character.adjectives &&
-                this.character.adjectives.length > 0
-                    ? this.character.adjectives[
-                          Math.floor(
-                              Math.random() * this.character.adjectives.length,
-                          )
-                      ]
-                    : "",
-            knowledge: formattedKnowledge,
-            knowledgeData: knowledgeData,
-            ragKnowledgeData: knowledgeData,
-            // Recent interactions between the sender and receiver, formatted as messages
-            recentMessageInteractions: formattedMessageInteractions,
-            // Recent interactions between the sender and receiver, formatted as posts
-            recentPostInteractions: formattedPostInteractions,
-            // Raw memory[] array of interactions
-            recentInteractionsData: recentInteractions,
-            // randomly pick one topic
-            topic:
-                this.character.topics && this.character.topics.length > 0
-                    ? this.character.topics[
-                          Math.floor(
-                              Math.random() * this.character.topics.length,
-                          )
-                      ]
-                    : null,
-            topics:
-                this.character.topics && this.character.topics.length > 0
-                    ? `${this.character.name} is interested in ` +
-                      this.character.topics
-                          .sort(() => 0.5 - Math.random())
-                          .slice(0, 5)
-                          .map((topic, index, array) => {
-                              if (index === array.length - 2) {
-                                  return topic + " and ";
-                              }
-                              // if last topic, don't add a comma
-                              if (index === array.length - 1) {
-                                  return topic;
-                              }
-                              return topic + ", ";
-                          })
-                          .join("")
-                    : "",
-            characterPostExamples:
-                formattedCharacterPostExamples &&
-                formattedCharacterPostExamples.replaceAll("\n", "").length > 0
-                    ? addHeader(
-                          `# Example Posts for ${this.character.name}`,
-                          formattedCharacterPostExamples,
-                      )
-                    : "",
-            characterMessageExamples:
-                formattedCharacterMessageExamples &&
-                formattedCharacterMessageExamples.replaceAll("\n", "").length >
-                    0
-                    ? addHeader(
-                          `# Example Conversations for ${this.character.name}`,
-                          formattedCharacterMessageExamples,
-                      )
-                    : "",
-            messageDirections:
-                this.character?.style?.all?.length > 0 ||
-                this.character?.style?.chat.length > 0
-                    ? addHeader(
-                          "# Message Directions for " + this.character.name,
-                          (() => {
-                              const all = this.character?.style?.all || [];
-                              const chat = this.character?.style?.chat || [];
-                              return [...all, ...chat].join("\n");
-                          })(),
-                      )
-                    : "",
-
-            postDirections:
-                this.character?.style?.all?.length > 0 ||
-                this.character?.style?.post.length > 0
-                    ? addHeader(
-                          "# Post Directions for " + this.character.name,
-                          (() => {
-                              const all = this.character?.style?.all || [];
-                              const post = this.character?.style?.post || [];
-                              return [...all, ...post].join("\n");
-                          })(),
-                      )
-                    : "",
-
-            //old logic left in for reference
-            //food for thought. how could we dynamically decide what parts of the character to add to the prompt other than random? rag? prompt the llm to decide?
-            /*
-            postDirections:
-                this.character?.style?.all?.length > 0 ||
-                this.character?.style?.post.length > 0
-                    ? addHeader(
-                            "# Post Directions for " + this.character.name,
-                            (() => {
-                                const all = this.character?.style?.all || [];
-                                const post = this.character?.style?.post || [];
-                                const shuffled = [...all, ...post].sort(
-                                    () => 0.5 - Math.random()
-                                );
-                                return shuffled
-                                    .slice(0, conversationLength / 2)
-                                    .join("\n");
-                            })()
-                        )
-                    : "",*/
-            // Agent runtime stuff
-            senderName,
-            actors:
-                actors && actors.length > 0
-                    ? addHeader("# Actors", actors)
-                    : "",
-            actorsData,
-            roomId,
-            goals:
-                goals && goals.length > 0
-                    ? addHeader(
-                          "# Goals\n{{agentName}} should prioritize accomplishing the objectives that are in progress.",
-                          goals,
-                      )
-                    : "",
-            goalsData,
-            recentMessages:
-                recentMessages && recentMessages.length > 0
-                    ? addHeader("# Conversation Messages", recentMessages)
-                    : "",
-            recentPosts:
-                recentPosts && recentPosts.length > 0
-                    ? addHeader("# Posts in Thread", recentPosts)
-                    : "",
-            recentMessagesData,
-            attachments:
-                formattedAttachments && formattedAttachments.length > 0
-                    ? addHeader("# Attachments", formattedAttachments)
-                    : "",
-            ...additionalKeys,
-        } as State;
-
-        const actionPromises = this.actions.map(async (action: Action) => {
-            const result = await action.validate(this, message, initialState);
-            if (result) {
-                return action;
-            }
-            return null;
-        });
-
-        const evaluatorPromises = this.evaluators.map(async (evaluator) => {
-            const result = await evaluator.validate(
-                this,
-                message,
-                initialState,
-            );
-            if (result) {
-                return evaluator;
-            }
-            return null;
-        });
-
-        const [resolvedEvaluators, resolvedActions, providers] =
-            await Promise.all([
-                Promise.all(evaluatorPromises),
-                Promise.all(actionPromises),
-                getProviders(this, message, initialState),
-            ]);
-
-        const evaluatorsData = resolvedEvaluators.filter(
-            Boolean,
-        ) as Evaluator[];
-        const actionsData = resolvedActions.filter(Boolean) as Action[];
-
-        const actionState = {
-            actionNames:
-                "Possible response actions: " + formatActionNames(actionsData),
-            actions:
-                actionsData.length > 0
-                    ? addHeader(
-                          "# Available Actions",
-                          formatActions(actionsData),
-                      )
-                    : "",
-            actionExamples:
-                actionsData.length > 0
-                    ? addHeader(
-                          "# Action Examples",
-                          composeActionExamples(actionsData, 10),
-                      )
-                    : "",
-            evaluatorsData,
-            evaluators:
-                evaluatorsData.length > 0
-                    ? formatEvaluators(evaluatorsData)
-                    : "",
-            evaluatorNames:
-                evaluatorsData.length > 0
-                    ? formatEvaluatorNames(evaluatorsData)
-                    : "",
-            evaluatorExamples:
-                evaluatorsData.length > 0
-                    ? formatEvaluatorExamples(evaluatorsData)
-                    : "",
-            providers: addHeader(
-                `# Additional Information About ${this.character.name} and The World`,
-                providers,
-            ),
-        };
-
-        return { ...initialState, ...actionState } as State;
-    }
-
-    async updateRecentMessageState(state: State): Promise<State> {
-        const conversationLength = this.getConversationLength();
-        const recentMessagesData = await this.messageManager.getMemories({
-            roomId: state.roomId,
-            count: conversationLength,
-            unique: false,
-        });
-
-        const recentMessages = formatMessages({
-            actors: state.actorsData ?? [],
-            messages: recentMessagesData.map((memory: Memory) => {
-                const newMemory = { ...memory };
-                delete newMemory.embedding;
-                return newMemory;
-            }),
-        });
-
-        let allAttachments = [];
-
-        if (recentMessagesData && Array.isArray(recentMessagesData)) {
-            const lastMessageWithAttachment = recentMessagesData.find(
-                (msg) =>
-                    msg.content.attachments &&
-                    msg.content.attachments.length > 0,
-            );
-
-            if (lastMessageWithAttachment) {
-                const lastMessageTime =
-                    lastMessageWithAttachment?.createdAt ?? Date.now();
-                const oneHourBeforeLastMessage =
-                    lastMessageTime - 60 * 60 * 1000; // 1 hour before last message
-
-                allAttachments = recentMessagesData
-                    .filter((msg) => {
-                        const msgTime = msg.createdAt ?? Date.now();
-                        return msgTime >= oneHourBeforeLastMessage;
-                    })
-                    .flatMap((msg) => msg.content.attachments || []);
-            }
-        }
-
-        const formattedAttachments = allAttachments
-            .map(
-                (attachment) =>
-                    `ID: ${attachment.id}
-Name: ${attachment.title}
-URL: ${attachment.url}
-Type: ${attachment.source}
-Description: ${attachment.description}
-Text: ${attachment.text}
-    `,
-            )
-            .join("\n");
-
-        return {
-            ...state,
-            recentMessages: addHeader(
-                "# Conversation Messages",
-                recentMessages,
-            ),
-            recentMessagesData,
-            attachments: formattedAttachments,
-        } as State;
-    }
+        throw error; // Re-throw error after logging and tracing
+      }
+    });
+  }
 }
-
-const formatKnowledge = (knowledge: KnowledgeItem[]) => {
-    // Group related content in a more natural way
-    return knowledge.map(item => {
-        // Get the main content text
-        const text = item.content.text;
-
-        // Clean up formatting but maintain natural text flow
-        const cleanedText = text
-            .trim()
-            .replace(/\n{3,}/g, '\n\n'); // Replace excessive newlines
-
-        return cleanedText;
-    }).join('\n\n'); // Separate distinct pieces with double newlines
-};
